@@ -10,8 +10,9 @@ const appRoot = path.resolve(here, '..');
 
 function resolveTscPath() {
   const candidates = [
-    path.resolve(appRoot, '../../../docs/openclaw/node_modules/typescript/bin/tsc'),
     path.resolve(appRoot, 'node_modules/typescript/bin/tsc'),
+    path.resolve(appRoot, '../../node_modules/typescript/bin/tsc'),
+    path.resolve(appRoot, '../../../node_modules/typescript/bin/tsc'),
   ];
 
   for (const candidate of candidates) {
@@ -20,7 +21,7 @@ function resolveTscPath() {
     }
   }
 
-  throw new Error('TypeScript compiler not found. Run the OpenClaw workspace install first.');
+  throw new Error('TypeScript compiler not found. Run `npm install` in apps/desktop/electron first.');
 }
 
 const result = spawnSync(process.execPath, [resolveTscPath(), '-p', 'tsconfig.json', ...process.argv.slice(2)], {

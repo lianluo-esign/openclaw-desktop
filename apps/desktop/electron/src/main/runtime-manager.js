@@ -15,7 +15,6 @@ const {
 } = require("./setup-config");
 const {
   resolveDefaultStateDir,
-  resolveDevRuntimeRoot,
   resolveRuntimeBuildProblems,
   resolveRuntimeEntry,
   resolveRuntimeLauncher,
@@ -113,8 +112,8 @@ class RuntimeManager extends EventEmitter {
     this.shell = shell;
     this.devAppRoot = devAppRoot;
     this.runtimeOverrideRoot = resolveRuntimeOverrideRoot();
-    this.runtimeRoot = this.runtimeOverrideRoot || (app?.isPackaged ? null : resolveDevRuntimeRoot(devAppRoot));
-    this.runtimeSource = this.runtimeOverrideRoot ? "override" : app?.isPackaged ? "managed" : "dev";
+    this.runtimeRoot = this.runtimeOverrideRoot || null;
+    this.runtimeSource = this.runtimeOverrideRoot ? "override" : "managed";
     this.runtimeLatestVersion = null;
     this.runtimeTask = null;
     this.runtimeCommand = null;
@@ -309,15 +308,6 @@ class RuntimeManager extends EventEmitter {
       return this.runtimeRoot;
     }
 
-    if (!this.app?.isPackaged) {
-      this.runtimeRoot = resolveDevRuntimeRoot(this.devAppRoot);
-      this.runtimeSource = "dev";
-      this.runtimeCommand = null;
-      this.runtimeLatestVersion = null;
-      this.health.version = resolveRuntimeVersion(this.runtimeRoot);
-      return this.runtimeRoot;
-    }
-
     const resolved = await ensureManagedRuntime({
       userDataDir: this.userDataDir,
       nodeExecPath,
@@ -338,10 +328,10 @@ class RuntimeManager extends EventEmitter {
   }
 
   buildRuntimeNotReadyMessage(buildProblems) {
-    if (this.runtimeOverrideRoot || !this.app?.isPackaged) {
+    if (this.runtimeOverrideRoot) {
       return (
         `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
-        "Run `npm run prepare:runtime` in the desktop app or point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime."
+        "Point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime, or let the desktop app resolve the user-installed openclaw runtime."
       );
     }
 

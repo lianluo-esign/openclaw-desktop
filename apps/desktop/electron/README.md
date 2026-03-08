@@ -12,8 +12,8 @@
 - 原生菜单 `运行时 -> 打开配置向导` 可随时重新打开 UI 内向导
 - 向导现在包含欢迎页、字段校验、完成后进入聊天，以及“填充测试消息”快捷动作
 - 桌面菜单与页面浮层支持启动、停止、重启、打开日志/配置目录、导出诊断信息
-- 已打包应用以纯壳模式运行，并在用户私有目录中在线安装/更新 OpenClaw runtime
-- 已打包应用会在用户私有目录下维护独立 runtime 版本，并在启动页展示检查/下载/更新进度
+- 已打包应用以纯壳模式运行，并直接复用当前用户已安装的官方 `openclaw` 命令
+- 如果当前用户还没有 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw` 后再启动
 
 ## 开发
 
@@ -22,7 +22,7 @@ npm install
 npm run dev
 ```
 
-默认会优先使用仓库内的 `docs/openclaw` 作为开发态 runtime 源目录。
+开发态与打包态现在都优先搜索当前用户可用的 `openclaw` 命令；也可通过 `OPENCLAW_DESKTOP_RUNTIME_DIR` 显式覆盖 runtime 根目录。
 
 ## 打包前准备
 
@@ -30,9 +30,7 @@ npm run dev
 npm run package
 ```
 
-打包后的桌面应用以纯壳模式运行：启动时会优先检查用户私有 runtime 目录（位于 Electron `userData/runtime/releases/<version>`），如果本地没有可用版本，就会联网从 npm 安装最新的 `openclaw`。若已有已安装版本，则会在启动时检查更新，并在下载失败时回退到本地缓存版本。启动页会显示检查、下载、安装、整理与启动阶段的进度。
-
-开发态仍可通过仓库内 `docs/openclaw` 直接运行；`prepare:runtime` 仅保留给旧的本地调试/兼容场景，不再参与正式打包。
+打包后的桌面应用以纯壳模式运行：启动时会优先搜索当前用户环境中的 `openclaw` 命令，并把该官方安装位置作为 runtime。若当前用户尚未安装 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw`，然后再启动。启动页会显示检查、安装、停止已有 Gateway、更新与启动阶段的进度。
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 
@@ -65,7 +63,7 @@ npm run package
 
 - `OPENCLAW_DESKTOP_RUNTIME_DIR`：指定已经构建好的 OpenClaw runtime 目录
 - `OPENCLAW_STATE_DIR`：指定 OpenClaw 状态目录；默认是 `~/.openclaw`
-- `OPENCLAW_GATEWAY_TOKEN`：显式指定本地 Gateway token；未设置时桌面应用会自动生成并持久化
+- `OPENCLAW_GATEWAY_TOKEN`：显式指定本地 Gateway token；未设置时桌面应用会自动生成并写入 `~/.openclaw/openclaw.json`
 - `OPENCLAW_BACKUP_DISABLED=1`：禁用云备份守护进程
 - `OPENCLAW_BACKUP_MINIO_ENDPOINT`：覆盖 MinIO/S3 兼容对象存储地址
 - `OPENCLAW_BACKUP_MINIO_ACCESS_KEY` / `OPENCLAW_BACKUP_MINIO_SECRET_KEY`：覆盖对象存储凭证

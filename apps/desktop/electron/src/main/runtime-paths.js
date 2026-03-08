@@ -21,12 +21,12 @@ function resolveRuntimeOverrideRoot() {
   return envOverride ? path.resolve(envOverride) : null;
 }
 
-function resolveDevRuntimeRoot(devAppRoot) {
-  return path.resolve(devAppRoot, "../../../docs/openclaw");
+function resolveDevRuntimeRoot() {
+  return resolveRuntimeOverrideRoot();
 }
 
-function resolveRuntimeRoot({ app, devAppRoot }) {
-  return resolveRuntimeOverrideRoot() || (app?.isPackaged ? null : resolveDevRuntimeRoot(devAppRoot));
+function resolveRuntimeRoot() {
+  return resolveRuntimeOverrideRoot();
 }
 
 function resolveRuntimeLauncher(runtimeRoot) {

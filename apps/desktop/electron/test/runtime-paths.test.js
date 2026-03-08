@@ -58,12 +58,12 @@ test("resolveRuntimeRoot prefers environment override", () => {
   }
 });
 
-test("resolveRuntimeRoot falls back to bundled docs/openclaw in dev", () => {
+test("resolveRuntimeRoot returns null without override", () => {
   const result = resolveRuntimeRoot({
     app: { isPackaged: false },
     devAppRoot: "/repo/apps/desktop/electron",
   });
-  assert.equal(result, path.resolve("/repo/apps/desktop/electron", "../../../docs/openclaw"));
+  assert.equal(result, null);
 });
 
 test("resolveRuntimeBuildProblems reports missing root node_modules", () => {
