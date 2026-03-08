@@ -3,9 +3,23 @@ const path = require('node:path');
 
 const { buildLinuxLauncherScript } = require('../src/main/linux-launcher');
 
-async function restoreBundledRuntimeNodeModules(appOutDir) {
+function resolveBundledRuntimeRoot(context) {
+  if (context.electronPlatformName === 'darwin') {
+    return path.join(
+      context.appOutDir,
+      `${context.packager.appInfo.productFilename}.app`,
+      'Contents',
+      'Resources',
+      'openclaw-runtime',
+    );
+  }
+
+  return path.join(context.appOutDir, 'resources', 'openclaw-runtime');
+}
+
+async function restoreBundledRuntimeNodeModules(context) {
   const sourceNodeModules = path.join(__dirname, '..', 'openclaw-runtime', 'node_modules');
-  const targetNodeModules = path.join(appOutDir, 'resources', 'openclaw-runtime', 'node_modules');
+  const targetNodeModules = path.join(resolveBundledRuntimeRoot(context), 'node_modules');
 
   await fs.rm(targetNodeModules, { recursive: true, force: true });
   await fs.cp(sourceNodeModules, targetNodeModules, {
@@ -66,7 +80,7 @@ async function prepareLinuxLauncher(context) {
 }
 
 module.exports = async function afterPack(context) {
-  await restoreBundledRuntimeNodeModules(context.appOutDir);
+  await restoreBundledRuntimeNodeModules(context);
 
   if (context.electronPlatformName === 'linux') {
     await prepareLinuxLauncher(context);
