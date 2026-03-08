@@ -19,6 +19,7 @@ const {
   sanitizeBackupConfig,
 } = require('./backup/common');
 const { resolveDefaultStateDir } = require('./runtime-paths');
+const { resolveElectronNodeExecPath } = require('./electron-node-exec');
 
 const RESTART_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
 
@@ -245,7 +246,7 @@ class BackupManager extends EventEmitter {
 
     this.setState('starting', { lastError: null });
     const child = fork(this.getDaemonEntry(), [], {
-      execPath: process.execPath,
+      execPath: resolveElectronNodeExecPath({ app: this.app }),
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',

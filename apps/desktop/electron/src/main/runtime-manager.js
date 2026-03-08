@@ -20,6 +20,7 @@ const {
   resolveRuntimeRoot,
   resolveRuntimeVersion,
 } = require("./runtime-paths");
+const { resolveElectronNodeExecPath } = require("./electron-node-exec");
 
 const DEFAULT_PORT = 18789;
 const READY_TIMEOUT_MS = 45_000;
@@ -238,6 +239,7 @@ class RuntimeManager extends EventEmitter {
 
     const token = this.ensureToken();
     const runtimeEntry = resolveRuntimeEntry(this.runtimeRoot);
+    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
     const env = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
@@ -251,7 +253,7 @@ class RuntimeManager extends EventEmitter {
     this.setState("starting", { lastError: null });
 
     const child = spawn(
-      process.execPath,
+      nodeExecPath,
       [
         runtimeEntry,
         "gateway",
