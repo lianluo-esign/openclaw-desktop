@@ -30,6 +30,13 @@ export type RuntimeInstallProgress = {
 
 type ProgressHandler = (update: RuntimeInstallProgress) => void;
 
+type NpmCliInvocation = {
+  command: string;
+  argsPrefix: string[];
+  env: Record<string, string>;
+  useLoginShell?: boolean;
+};
+
 function emitProgress(onProgress: ProgressHandler | undefined, next: RuntimeInstallProgress): void {
   if (typeof onProgress === "function") {
     onProgress({ progress: null, detail: null, version: null, latestVersion: null, ...next });
@@ -148,6 +155,54 @@ function splitPathEnv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function quotePosixShellArg(value: string): string {
+  return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+}
+
+function resolveUserShell(): string {
+  const envShell = String(process.env.SHELL || "").trim();
+  if (envShell && fsSync.existsSync(envShell)) {
+    return envShell;
+  }
+
+  if (process.platform === "darwin" && fsSync.existsSync("/bin/zsh")) {
+    return "/bin/zsh";
+  }
+
+  if (fsSync.existsSync("/bin/bash")) {
+    return "/bin/bash";
+  }
+
+  return "/bin/sh";
+}
+
+function resolveNpmBinaryCandidates(): string[] {
+  const home = homeDir();
+  const pathCandidates = splitPathEnv(process.env.PATH).map((dir) => path.join(dir, process.platform === "win32" ? "npm.cmd" : "npm"));
+  const commonCandidates = process.platform === "win32"
+    ? []
+    : [
+      "/opt/homebrew/bin/npm",
+      "/usr/local/bin/npm",
+      "/opt/local/bin/npm",
+      path.join(home, ".volta", "bin", "npm"),
+      path.join(home, ".fnm", "current", "bin", "npm"),
+      path.join(home, ".asdf", "shims", "npm"),
+      path.join(home, "node_modules", ".bin", "npm"),
+    ];
+
+  return uniqPaths([...pathCandidates, ...commonCandidates]);
+}
+
+function findNpmBinaryOnDisk(): string | null {
+  for (const candidate of resolveNpmBinaryCandidates()) {
+    if (fsSync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function findCommandOnPath(): string | null {
   const dirs = splitPathEnv(process.env.PATH);
   for (const dir of dirs) {
@@ -209,21 +264,40 @@ function inspectRuntimeFromCommand(commandPath: string, source: RuntimeSource): 
   };
 }
 
-function resolveNpmCliInvocation(nodeExecPath: string): { command: string; argsPrefix: string[]; env: Record<string, string> } {
+function resolveNpmCliInvocation(nodeExecPath: string): NpmCliInvocation {
   try {
     const npmCliPath = require.resolve("npm/bin/npm-cli.js");
     return { command: nodeExecPath, argsPrefix: [npmCliPath], env: { ELECTRON_RUN_AS_NODE: "1" } };
   } catch {
-    return { command: "npm", argsPrefix: [], env: {} };
+    const npmBinary = findNpmBinaryOnDisk();
+    if (npmBinary) {
+      return { command: npmBinary, argsPrefix: [], env: {} };
+    }
+
+    return {
+      command: resolveUserShell(),
+      argsPrefix: ["-lc"],
+      env: {},
+      useLoginShell: true,
+    };
   }
+}
+
+function describeNpmInvocation(invocation: NpmCliInvocation, cwd: string, npmArgs: string[]): string {
+  if (invocation.useLoginShell) {
+    const shellCommand = `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`;
+    return `shell login fallback: ${invocation.command} ${invocation.argsPrefix.join(" ")} ${shellCommand}`;
+  }
+
+  const rendered = [invocation.command, ...invocation.argsPrefix, ...npmArgs].join(" ").trim();
+  return `direct npm invocation: ${rendered}`;
 }
 
 async function runInstallCommand(params: { nodeExecPath: string; onProgress?: ProgressHandler }): Promise<void> {
   const { nodeExecPath, onProgress } = params;
   const invocation = resolveNpmCliInvocation(nodeExecPath);
   const cwd = homeDir();
-  const args = [
-    ...invocation.argsPrefix,
+  const npmArgs = [
     "install",
     `${PACKAGE_NAME}@latest`,
     "--no-fund",
@@ -231,11 +305,18 @@ async function runInstallCommand(params: { nodeExecPath: string; onProgress?: Pr
     "--loglevel",
     "info",
   ];
+  const args = invocation.useLoginShell
+    ? [
+      ...invocation.argsPrefix,
+      `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`,
+    ]
+    : [...invocation.argsPrefix, ...npmArgs];
 
   emitProgress(onProgress, {
     phase: "installing",
     progress: 24,
     message: `正在用户目录 ${cwd} 安装 OpenClaw 最新版…`,
+    detail: describeNpmInvocation(invocation, cwd, npmArgs),
   });
 
   await new Promise<void>((resolve, reject) => {

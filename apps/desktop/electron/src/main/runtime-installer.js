@@ -146,6 +146,46 @@ function splitPathEnv(value) {
         .map((entry) => entry.trim())
         .filter(Boolean);
 }
+function quotePosixShellArg(value) {
+    return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+}
+function resolveUserShell() {
+    const envShell = String(process.env.SHELL || "").trim();
+    if (envShell && fsSync.existsSync(envShell)) {
+        return envShell;
+    }
+    if (process.platform === "darwin" && fsSync.existsSync("/bin/zsh")) {
+        return "/bin/zsh";
+    }
+    if (fsSync.existsSync("/bin/bash")) {
+        return "/bin/bash";
+    }
+    return "/bin/sh";
+}
+function resolveNpmBinaryCandidates() {
+    const home = homeDir();
+    const pathCandidates = splitPathEnv(process.env.PATH).map((dir) => path.join(dir, process.platform === "win32" ? "npm.cmd" : "npm"));
+    const commonCandidates = process.platform === "win32"
+        ? []
+        : [
+            "/opt/homebrew/bin/npm",
+            "/usr/local/bin/npm",
+            "/opt/local/bin/npm",
+            path.join(home, ".volta", "bin", "npm"),
+            path.join(home, ".fnm", "current", "bin", "npm"),
+            path.join(home, ".asdf", "shims", "npm"),
+            path.join(home, "node_modules", ".bin", "npm"),
+        ];
+    return uniqPaths([...pathCandidates, ...commonCandidates]);
+}
+function findNpmBinaryOnDisk() {
+    for (const candidate of resolveNpmBinaryCandidates()) {
+        if (fsSync.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return null;
+}
 function findCommandOnPath() {
     const dirs = splitPathEnv(process.env.PATH);
     for (const dir of dirs) {
@@ -207,15 +247,31 @@ function resolveNpmCliInvocation(nodeExecPath) {
         return { command: nodeExecPath, argsPrefix: [npmCliPath], env: { ELECTRON_RUN_AS_NODE: "1" } };
     }
     catch {
-        return { command: "npm", argsPrefix: [], env: {} };
+        const npmBinary = findNpmBinaryOnDisk();
+        if (npmBinary) {
+            return { command: npmBinary, argsPrefix: [], env: {} };
+        }
+        return {
+            command: resolveUserShell(),
+            argsPrefix: ["-lc"],
+            env: {},
+            useLoginShell: true,
+        };
     }
+}
+function describeNpmInvocation(invocation, cwd, npmArgs) {
+    if (invocation.useLoginShell) {
+        const shellCommand = `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`;
+        return `shell login fallback: ${invocation.command} ${invocation.argsPrefix.join(" ")} ${shellCommand}`;
+    }
+    const rendered = [invocation.command, ...invocation.argsPrefix, ...npmArgs].join(" ").trim();
+    return `direct npm invocation: ${rendered}`;
 }
 async function runInstallCommand(params) {
     const { nodeExecPath, onProgress } = params;
     const invocation = resolveNpmCliInvocation(nodeExecPath);
     const cwd = homeDir();
-    const args = [
-        ...invocation.argsPrefix,
+    const npmArgs = [
         "install",
         `${PACKAGE_NAME}@latest`,
         "--no-fund",
@@ -223,10 +279,17 @@ async function runInstallCommand(params) {
         "--loglevel",
         "info",
     ];
+    const args = invocation.useLoginShell
+        ? [
+            ...invocation.argsPrefix,
+            `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`,
+        ]
+        : [...invocation.argsPrefix, ...npmArgs];
     emitProgress(onProgress, {
         phase: "installing",
         progress: 24,
         message: `正在用户目录 ${cwd} 安装 OpenClaw 最新版…`,
+        detail: describeNpmInvocation(invocation, cwd, npmArgs),
     });
     await new Promise((resolve, reject) => {
         const child = (0, node_child_process_1.spawn)(invocation.command, args, {
