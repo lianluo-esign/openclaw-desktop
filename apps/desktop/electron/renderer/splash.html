@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenClaw Desktop</title>
+    <link rel="stylesheet" href="./splash.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <div class="top-bar">
+        <button id="home-btn" class="top-home-btn">返回 OpenClaw 首页</button>
+      </div>
+
+      <section class="hero">
+        <div class="badge">桌面托管 Runtime</div>
+        <h1>OpenClaw Desktop</h1>
+        <p class="summary">开箱即用地拉起本地 OpenClaw runtime，并直接进入与 Web UI 一致的控制台。</p>
+      </section>
+
+      <section class="card status-card">
+        <div class="card-head">
+          <h2>运行状态</h2>
+          <span id="state-pill" class="pill pill-muted">初始化中</span>
+        </div>
+        <p id="state-text" class="detail">正在准备 OpenClaw runtime…</p>
+        <pre id="state-error" class="error hidden"></pre>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h3>连接信息</h3>
+          <dl class="kv">
+            <div><dt>HTTP</dt><dd id="http-url">-</dd></div>
+            <div><dt>WebSocket</dt><dd id="ws-url">-</dd></div>
+            <div><dt>状态目录</dt><dd id="state-dir">-</dd></div>
+            <div><dt>日志文件</dt><dd id="log-path">-</dd></div>
+          </dl>
+        </article>
+
+        <article class="card">
+          <div class="card-head compact-head">
+            <h3>云备份与回滚</h3>
+            <span id="backup-list-status" class="meta-chip">未加载</span>
+          </div>
+          <dl class="kv">
+            <div><dt>备份状态</dt><dd id="backup-state">-</dd></div>
+            <div><dt>对象存储</dt><dd id="backup-endpoint">-</dd></div>
+            <div><dt>存储桶</dt><dd id="backup-bucket">-</dd></div>
+            <div><dt>最近版本</dt><dd id="backup-version">-</dd></div>
+            <div><dt>最近对象</dt><dd id="backup-object">-</dd></div>
+            <div><dt>最近备份时间</dt><dd id="backup-time">-</dd></div>
+            <div><dt>最近回滚版本</dt><dd id="backup-restore-version">-</dd></div>
+            <div><dt>最近回滚时间</dt><dd id="backup-restore-time">-</dd></div>
+          </dl>
+          <div class="actions">
+            <button id="backup-now-btn">立即备份</button>
+            <button id="backup-restart-btn" class="secondary">重启备份守护进程</button>
+            <button id="backup-stop-btn" class="secondary">停止备份守护进程</button>
+            <button id="backup-logs-btn" class="ghost">打开备份日志目录</button>
+          </div>
+          <div class="restore-panel">
+            <p class="subtle">回滚入口基于当前 Electron 启动页，恢复时会先停止本地 runtime 与备份守护进程，再恢复 `~/.openclaw`。</p>
+            <div class="restore-controls">
+              <select id="backup-versions-select"></select>
+              <button id="backup-refresh-btn" class="secondary">刷新版本</button>
+              <button id="backup-restore-btn">恢复所选版本</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <h3>桌面动作</h3>
+          <div class="actions">
+            <button id="start-btn">启动</button>
+            <button id="restart-btn" class="secondary">重启</button>
+            <button id="stop-btn" class="secondary">停止</button>
+            <button id="config-btn" class="ghost">打开配置目录</button>
+            <button id="logs-btn" class="ghost">打开日志目录</button>
+            <button id="diag-btn" class="ghost">导出诊断信息</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="footer-note">
+        <span>提示：如果当前停留在此页，通常表示 runtime 仍在启动、构建产物缺失，或正在自动重试。</span>
+      </section>
+    </main>
+
+    <script src="./splash.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "openclaw-desktop",
+  "private": true,
+  "workspaces": [
+    "apps/desktop/electron"
+  ],
+  "scripts": {
+    "dev": "npm --prefix apps/desktop/electron run dev",
+    "build": "npm --prefix apps/desktop/electron run build",
+    "package": "npm --prefix apps/desktop/electron run package",
+    "prepare:runtime": "npm --prefix apps/desktop/electron run prepare:runtime",
+    "typecheck": "npm --prefix apps/desktop/electron run typecheck",
+    "test": "npm --prefix apps/desktop/electron test"
+  }
+}

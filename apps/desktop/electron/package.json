@@ -1,0 +1,71 @@
+{
+  "name": "@openclaw/desktop-electron",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpenClaw Desktop Electron shell with managed local runtime.",
+  "main": "src/main/index.js",
+  "author": {
+    "name": "OpenClaw",
+    "email": "contributing@openclaw.ai"
+  },
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node -e \"console.log('No renderer build step required for MVP.')\"",
+    "package": "npm run prepare:runtime && electron-builder",
+    "prepare:runtime": "node scripts/prepare-openclaw-runtime.mjs",
+    "typecheck": "node --check src/main/index.js && node --check src/main/backup/common.js && node --check src/main/backup/daemon.js && node --check src/main/backup-manager.js && node --check src/main/linux-display.js && node --check src/main/linux-launcher.js && node --check src/main/shutdown.js && node --check src/main/tray.js && node --check src/main/runtime-manager.js && node --check src/main/runtime-paths.js && node --check src/main/setup-config.js && node --check src/preload/index.js && node --check renderer/splash.js && node --check scripts/after-pack.js && node --check scripts/dev.mjs && node --check scripts/prepare-openclaw-runtime.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "39.8.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "ai.openclaw.desktop",
+    "productName": "OpenClaw Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "openclaw-runtime",
+        "to": "openclaw-runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility",
+      "executableName": "openclaw-desktop",
+      "maintainer": "OpenClaw <contributing@openclaw.ai>",
+      "icon": "../../../docs/openclaw/ui/public/app-icon-512.png"
+    },
+    "afterPack": "scripts/after-pack.js",
+    "electronVersion": "39.8.0",
+    "icon": "../../../docs/openclaw/ui/public/app-icon-512.png"
+  },
+  "dependencies": {
+    "json5": "^2.2.3",
+    "minio": "^8.0.7",
+    "tar": "^7.5.10"
+  },
+  "homepage": "https://github.com/openclaw/openclaw#readme"
+}

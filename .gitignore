@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+out/
+.DS_Store
+apps/desktop/electron/openclaw-runtime/
+apps/desktop/electron/.electron-user-data/
