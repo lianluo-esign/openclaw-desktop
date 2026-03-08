@@ -34,11 +34,11 @@ npm run package
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 
-- macOS：输出到 `apps/desktop/electron/dist`，默认产出 `universal` 的 `dmg` 与 `zip`，文件名如 `openclaw-desktop-2026-03-08.dmg` / `openclaw-desktop-2026-03-08.zip`
+- macOS：输出到 `apps/desktop/electron/dist`，默认按当前机器架构产出 `dmg` 与 `zip`，文件名如 `openclaw-desktop-2026-03-08.dmg` / `openclaw-desktop-2026-03-08.zip`
 - Windows：输出到 `apps/desktop/electron/dist`，默认产出 `nsis` 安装包，文件名如 `openclaw-desktop-2026-03-08.exe`
 - Linux：输出到 `apps/desktop/electron/dist`，默认产出 `AppImage`，文件名如 `openclaw-desktop-2026-03-08.AppImage`
 
-如需显式指定平台，也可以使用：`npm run package:mac`、`npm run package:win`、`npm run package:linux`。构建日期默认取当天本地日期，也可通过环境变量 `OPENCLAW_BUILD_DATE` 覆盖。
+如需显式指定平台，也可以使用：`npm run package:mac`、`npm run package:mac:arm64`、`npm run package:mac:x64`、`npm run package:win`、`npm run package:linux`。其中 `package:mac` 默认按当前 Mac 的实际架构构建，避免 `universal` 合包时的 Mach-O 数量不一致报错。构建日期默认取当天本地日期，也可通过环境变量 `OPENCLAW_BUILD_DATE` 覆盖。
 
 ## 云备份（MinIO）
 

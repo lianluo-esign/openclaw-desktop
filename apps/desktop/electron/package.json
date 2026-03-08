@@ -17,6 +17,8 @@
     "typecheck": "node --check src/main/index.js && node --check src/main/backup/common.js && node --check src/main/backup/daemon.js && node --check src/main/backup-manager.js && node --check src/main/linux-display.js && node --check src/main/linux-launcher.js && node --check src/main/shutdown.js && node --check src/main/tray.js && node --check src/main/runtime-manager.js && node --check src/main/runtime-paths.js && node --check src/main/setup-config.js && node --check src/preload/index.js && node --check renderer/splash.js && node --check scripts/after-pack.js && node --check scripts/dev.mjs && node --check scripts/prepare-openclaw-runtime.mjs && node --check scripts/package.mjs",
     "test": "node --test test/*.test.js",
     "package:mac": "node scripts/package.mjs --mac",
+    "package:mac:arm64": "node scripts/package.mjs --mac --arm64",
+    "package:mac:x64": "node scripts/package.mjs --mac --x64",
     "package:win": "node scripts/package.mjs --win",
     "package:linux": "node scripts/package.mjs --linux"
   },
@@ -47,18 +49,8 @@
     ],
     "mac": {
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "universal"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "universal"
-          ]
-        }
+        "dmg",
+        "zip"
       ],
       "category": "public.app-category.productivity"
     },
