@@ -36,6 +36,16 @@ async function restoreBundledRuntimeNodeModules(context) {
   }
 }
 
+async function chmodBundledRuntimeLaunchers(context) {
+  if (context.electronPlatformName === 'win32') {
+    return;
+  }
+
+  for (const runtimeRoot of resolveBundledRuntimeRoots(context)) {
+    await chmodExecutable(path.join(runtimeRoot, 'bin', 'openclaw-gateway'));
+  }
+}
+
 async function chmodExecutable(filePath) {
   try {
     await fs.chmod(filePath, 0o755);
@@ -94,5 +104,6 @@ module.exports = async function afterPack(context) {
     await prepareLinuxLauncher(context);
   }
 
+  await chmodBundledRuntimeLaunchers(context);
   await chmodPlatformExecutable(context);
 };

@@ -17,6 +17,7 @@ const {
   resolveDefaultStateDir,
   resolveRuntimeBuildProblems,
   resolveRuntimeEntry,
+  resolveRuntimeLauncher,
   resolveRuntimeRoot,
   resolveRuntimeVersion,
 } = require("./runtime-paths");
@@ -239,32 +240,47 @@ class RuntimeManager extends EventEmitter {
 
     const token = this.ensureToken();
     const runtimeEntry = resolveRuntimeEntry(this.runtimeRoot);
+    const runtimeLauncher = resolveRuntimeLauncher(this.runtimeRoot);
     const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
+    const runtimeArgs = [
+      "gateway",
+      "run",
+      "--bind",
+      "loopback",
+      "--port",
+      String(port),
+      "--allow-unconfigured",
+      "--force",
+    ];
     const env = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
       OPENCLAW_GATEWAY_TOKEN: token,
       OPENCLAW_STATE_DIR: this.stateDir,
       OPENCLAW_CONFIG_PATH: this.getConfigPath(),
+      OPENCLAW_DESKTOP_NODE_EXEC: nodeExecPath,
       FORCE_COLOR: "0",
     };
     const out = fs.createWriteStream(this.logPath, { flags: "a" });
 
     this.setState("starting", { lastError: null });
 
+    let runtimeCommand = nodeExecPath;
+    let runtimeCommandArgs = [runtimeEntry, ...runtimeArgs];
+
+    if (runtimeLauncher) {
+      if (process.platform === "win32") {
+        runtimeCommand = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
+        runtimeCommandArgs = ["/d", "/s", "/c", runtimeLauncher, ...runtimeArgs];
+      } else {
+        runtimeCommand = runtimeLauncher;
+        runtimeCommandArgs = runtimeArgs;
+      }
+    }
+
     const child = spawn(
-      nodeExecPath,
-      [
-        runtimeEntry,
-        "gateway",
-        "run",
-        "--bind",
-        "loopback",
-        "--port",
-        String(port),
-        "--allow-unconfigured",
-        "--force",
-      ],
+      runtimeCommand,
+      runtimeCommandArgs,
       {
         cwd: this.runtimeRoot,
         env,

@@ -29,6 +29,20 @@ function resolveRuntimeRoot({ app, devAppRoot }) {
   return path.resolve(devAppRoot, "../../../docs/openclaw");
 }
 
+function resolveRuntimeLauncher(runtimeRoot) {
+  const winLauncher = path.join(runtimeRoot, "bin", "openclaw-gateway.cmd");
+  if (process.platform === "win32" && fs.existsSync(winLauncher)) {
+    return winLauncher;
+  }
+
+  const launcher = path.join(runtimeRoot, "bin", "openclaw-gateway");
+  if (fs.existsSync(launcher)) {
+    return launcher;
+  }
+
+  return null;
+}
+
 function resolveRuntimeEntry(runtimeRoot) {
   return path.join(runtimeRoot, "openclaw.mjs");
 }
@@ -79,6 +93,7 @@ function resolveRuntimeBuildProblems(runtimeRoot) {
 module.exports = {
   resolveDefaultStateDir,
   resolveRuntimeRoot,
+  resolveRuntimeLauncher,
   resolveRuntimeEntry,
   resolveRuntimeVersion,
   resolveRuntimeBuildProblems,

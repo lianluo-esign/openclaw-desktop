@@ -30,7 +30,7 @@ npm run prepare:runtime
 npm run package
 ```
 
-`prepare:runtime` 会在 `apps/desktop/electron/openclaw-runtime` 生成打包所需的 OpenClaw runtime 目录。
+`prepare:runtime` 会在 `apps/desktop/electron/openclaw-runtime` 生成打包所需的 OpenClaw runtime 目录。该目录现在只保留运行时必需资源、生产依赖，以及供 Electron 直接调用的 `bin/openclaw-gateway` 启动器。
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 

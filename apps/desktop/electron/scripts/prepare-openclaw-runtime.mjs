@@ -10,9 +10,30 @@ const appRoot = path.resolve(here, "..");
 const repoRoot = path.resolve(appRoot, "../../../");
 const sourceRoot = path.join(repoRoot, "docs", "openclaw");
 const targetRoot = path.join(appRoot, "openclaw-runtime");
+const tempStoreDir = path.join(targetRoot, ".pnpm-store");
+const tempLockfilePath = path.join(targetRoot, "pnpm-lock.yaml");
 
-function run(cmd, args, cwd) {
-  const result = spawnSync(cmd, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
+const RUNTIME_ROOT_ENTRIES = [
+  "package.json",
+  "openclaw.mjs",
+  "dist",
+  "assets",
+  "extensions",
+  "skills",
+];
+
+const RUNTIME_DOCS_ENTRIES = [["docs", "reference", "templates"]];
+
+function run(cmd, args, cwd, extraEnv = {}) {
+  const result = spawnSync(cmd, args, {
+    cwd,
+    env: {
+      ...process.env,
+      ...extraEnv,
+    },
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
@@ -38,61 +59,101 @@ function resolvePnpmRunner() {
   throw new Error("pnpm is required to prepare the bundled OpenClaw runtime, and npx pnpm is unavailable.");
 }
 
-function shouldCopyRuntimeEntry(source, entry) {
-  const relative = path.relative(source, entry).replaceAll("\\", "/");
-  if (!relative || relative === ".") {
-    return true;
+function copyRequiredEntry(relativePath) {
+  const sourcePath = path.join(sourceRoot, relativePath);
+  const targetPath = path.join(targetRoot, relativePath);
+
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Required runtime entry missing at ${sourcePath}`);
   }
 
-  if (
-    relative === "docs" ||
-    relative === "docs/reference" ||
-    relative === "docs/reference/templates" ||
-    relative.startsWith("docs/reference/templates/")
-  ) {
-    return true;
-  }
-
-  return ![
-    ".git",
-    ".github",
-    "docs/",
-    "test/",
-    ".agents/",
-    ".agent/",
-    "node_modules/.cache/",
-  ].some((pattern) => relative === pattern.replace(/\/$/, "") || relative.startsWith(pattern));
-}
-
-function copyTree(source, target) {
-  fs.cpSync(source, target, {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.cpSync(sourcePath, targetPath, {
     recursive: true,
     force: true,
-    filter: (entry) => shouldCopyRuntimeEntry(source, entry),
   });
 }
 
-function copyRootNodeModules(sourceRoot, targetRoot) {
-  const sourceNodeModules = path.join(sourceRoot, "node_modules");
-  const targetNodeModules = path.join(targetRoot, "node_modules");
-
-  if (!fs.existsSync(sourceNodeModules)) {
-    throw new Error(`OpenClaw dependencies not found at ${sourceNodeModules}`);
+function copyRuntimeTree() {
+  for (const entry of RUNTIME_ROOT_ENTRIES) {
+    copyRequiredEntry(entry);
   }
 
-  fs.rmSync(targetNodeModules, { recursive: true, force: true });
-  fs.cpSync(sourceNodeModules, targetNodeModules, {
-    recursive: true,
-    force: true,
-    verbatimSymlinks: true,
-    filter: (entry) => {
-      const relative = path.relative(sourceNodeModules, entry).replaceAll("\\", "/");
-      if (!relative || relative === ".") {
-        return true;
-      }
-      return !(relative === ".cache" || relative.startsWith(".cache/"));
-    },
-  });
+  for (const segments of RUNTIME_DOCS_ENTRIES) {
+    copyRequiredEntry(path.join(...segments));
+  }
+}
+
+function buildUnixGatewayLauncher() {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    "",
+    'SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    'NODE_EXEC="${OPENCLAW_DESKTOP_NODE_EXEC:-}"',
+    "",
+    'if [ -z "$NODE_EXEC" ]; then',
+    '  echo "OPENCLAW_DESKTOP_NODE_EXEC is required" >&2',
+    "  exit 1",
+    "fi",
+    "",
+    'export ELECTRON_RUN_AS_NODE="${ELECTRON_RUN_AS_NODE:-1}"',
+    'exec "$NODE_EXEC" "$SCRIPT_DIR/../openclaw.mjs" "$@"',
+    "",
+  ].join("\n");
+}
+
+function buildWindowsGatewayLauncher() {
+  return [
+    "@echo off",
+    "setlocal",
+    'if "%OPENCLAW_DESKTOP_NODE_EXEC%"=="" (',
+    '  echo OPENCLAW_DESKTOP_NODE_EXEC is required 1>&2',
+    '  exit /b 1',
+    ')',
+    'if "%ELECTRON_RUN_AS_NODE%"=="" set ELECTRON_RUN_AS_NODE=1',
+    '"%OPENCLAW_DESKTOP_NODE_EXEC%" "%~dp0..\\openclaw.mjs" %*',
+    "",
+  ].join("\r\n");
+}
+
+function writeRuntimeLaunchers() {
+  const binDir = path.join(targetRoot, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const unixLauncherPath = path.join(binDir, "openclaw-gateway");
+  fs.writeFileSync(unixLauncherPath, buildUnixGatewayLauncher(), "utf8");
+  fs.chmodSync(unixLauncherPath, 0o755);
+
+  const windowsLauncherPath = path.join(binDir, "openclaw-gateway.cmd");
+  fs.writeFileSync(windowsLauncherPath, buildWindowsGatewayLauncher(), "utf8");
+}
+
+function installProductionNodeModules(pnpm) {
+  const sourceLockfilePath = path.join(sourceRoot, "pnpm-lock.yaml");
+  if (!fs.existsSync(sourceLockfilePath)) {
+    throw new Error(`OpenClaw lockfile not found at ${sourceLockfilePath}`);
+  }
+
+  fs.cpSync(sourceLockfilePath, tempLockfilePath, { force: true });
+  run(
+    pnpm.cmd,
+    [
+      ...pnpm.prefix,
+      "install",
+      "--prod",
+      "--frozen-lockfile",
+      "--ignore-scripts",
+      "--ignore-workspace",
+      "--store-dir",
+      tempStoreDir,
+      "--virtual-store-dir",
+      "node_modules/.pnpm",
+    ],
+    targetRoot,
+  );
+  fs.rmSync(tempLockfilePath, { force: true });
+  fs.rmSync(tempStoreDir, { recursive: true, force: true });
 }
 
 function main() {
@@ -115,10 +176,12 @@ function main() {
     fs.rmSync(targetRoot, { recursive: true, force: true });
   }
 
-  console.log("[prepare-runtime] Staging runtime resources...");
-  copyTree(sourceRoot, targetRoot);
-  console.log("[prepare-runtime] Restoring runtime root node_modules symlinks...");
-  copyRootNodeModules(sourceRoot, targetRoot);
+  console.log("[prepare-runtime] Staging runtime bundle...");
+  copyRuntimeTree();
+  writeRuntimeLaunchers();
+
+  console.log("[prepare-runtime] Installing production runtime dependencies...");
+  installProductionNodeModules(pnpm);
 
   console.log(`[prepare-runtime] Runtime staged at ${targetRoot}`);
 }
