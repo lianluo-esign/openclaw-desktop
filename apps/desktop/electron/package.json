@@ -10,17 +10,18 @@
   },
   "license": "UNLICENSED",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
-    "build": "node -e \"console.log('No renderer build step required for MVP.')\"",
+    "dev": "npm run build:ts && node scripts/dev.mjs",
+    "build": "npm run build:ts",
     "package": "node scripts/package.mjs",
     "prepare:runtime": "node scripts/prepare-openclaw-runtime.mjs",
-    "typecheck": "node --check src/main/index.js && node --check src/main/backup/common.js && node --check src/main/backup/daemon.js && node --check src/main/backup-manager.js && node --check src/main/linux-display.js && node --check src/main/linux-launcher.js && node --check src/main/shutdown.js && node --check src/main/tray.js && node --check src/main/runtime-manager.js && node --check src/main/runtime-paths.js && node --check src/main/setup-config.js && node --check src/preload/index.js && node --check renderer/splash.js && node --check scripts/after-pack.js && node --check scripts/dev.mjs && node --check scripts/prepare-openclaw-runtime.mjs && node --check scripts/package.mjs",
+    "typecheck": "npm run build:ts -- --noEmit && node --check src/main/index.js && node --check src/main/backup/common.js && node --check src/main/backup/daemon.js && node --check src/main/backup-manager.js && node --check src/main/linux-display.js && node --check src/main/linux-launcher.js && node --check src/main/shutdown.js && node --check src/main/tray.js && node --check src/main/runtime-manager.js && node --check src/main/runtime-paths.js && node --check src/main/setup-config.js && node --check src/main/runtime-installer.js && node --check src/preload/index.js && node --check renderer/splash.js && node --check scripts/after-pack.js && node --check scripts/build-ts.mjs && node --check scripts/dev.mjs && node --check scripts/prepare-openclaw-runtime.mjs && node --check scripts/package.mjs",
     "test": "node --test test/*.test.js",
     "package:mac": "node scripts/package.mjs --mac",
     "package:mac:arm64": "node scripts/package.mjs --mac --arm64",
     "package:mac:x64": "node scripts/package.mjs --mac --x64",
     "package:win": "node scripts/package.mjs --win",
-    "package:linux": "node scripts/package.mjs --linux"
+    "package:linux": "node scripts/package.mjs --linux",
+    "build:ts": "node scripts/build-ts.mjs"
   },
   "devDependencies": {
     "dmg-license": "^1.0.11",
@@ -37,15 +38,6 @@
       "src/**/*",
       "renderer/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "openclaw-runtime",
-        "to": "openclaw-runtime",
-        "filter": [
-          "**/*"
-        ]
-      }
     ],
     "mac": {
       "target": [

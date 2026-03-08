@@ -48,7 +48,7 @@ function main() {
   const explicitTargetArgs = process.argv.slice(2);
   const platformArgs = explicitTargetArgs.length > 0 ? explicitTargetArgs : resolvePlatformArgs(process.platform);
 
-  run('npm', ['run', 'prepare:runtime'], env);
+  run('npm', ['run', 'build'], env);
   run('npx', ['electron-builder', ...platformArgs, '--publish', 'never'], env);
 }
 

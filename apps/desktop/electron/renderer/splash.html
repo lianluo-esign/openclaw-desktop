@@ -10,6 +10,12 @@
   <body>
     <main class="shell">
       <div class="top-bar">
+        <div class="window-controls" aria-hidden="true">
+          <span class="window-control window-control-close"></span>
+          <span class="window-control window-control-minimize"></span>
+          <span class="window-control window-control-zoom"></span>
+        </div>
+        <div class="window-title">OpenClaw Desktop</div>
         <button id="home-btn" class="top-home-btn">返回 OpenClaw 首页</button>
       </div>
 
@@ -25,6 +31,16 @@
           <span id="state-pill" class="pill pill-muted">初始化中</span>
         </div>
         <p id="state-text" class="detail">正在准备 OpenClaw runtime…</p>
+        <div id="runtime-progress" class="runtime-progress hidden" aria-live="polite">
+          <div class="runtime-progress__meta">
+            <span id="runtime-progress-label">准备中</span>
+            <span id="runtime-progress-value">0%</span>
+          </div>
+          <div class="runtime-progress__track">
+            <div id="runtime-progress-bar" class="runtime-progress__bar"></div>
+          </div>
+          <div id="runtime-progress-detail" class="runtime-progress__detail hidden"></div>
+        </div>
         <pre id="state-error" class="error hidden"></pre>
       </section>
 
@@ -32,10 +48,11 @@
         <article class="card">
           <h3>连接信息</h3>
           <dl class="kv">
-            <div><dt>HTTP</dt><dd id="http-url">-</dd></div>
-            <div><dt>WebSocket</dt><dd id="ws-url">-</dd></div>
-            <div><dt>状态目录</dt><dd id="state-dir">-</dd></div>
-            <div><dt>日志文件</dt><dd id="log-path">-</dd></div>
+            <div><dt>HTTP</dt><dd id="http-url" class="mono">-</dd></div>
+            <div><dt>WebSocket</dt><dd id="ws-url" class="mono">-</dd></div>
+            <div><dt>Runtime 位置</dt><dd id="runtime-root" class="mono">-</dd></div>
+            <div><dt>状态目录</dt><dd id="state-dir" class="mono">-</dd></div>
+            <div><dt>日志文件</dt><dd id="log-path" class="mono">-</dd></div>
           </dl>
         </article>
 

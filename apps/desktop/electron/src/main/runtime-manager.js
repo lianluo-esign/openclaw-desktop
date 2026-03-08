@@ -15,13 +15,15 @@ const {
 } = require("./setup-config");
 const {
   resolveDefaultStateDir,
+  resolveDevRuntimeRoot,
   resolveRuntimeBuildProblems,
   resolveRuntimeEntry,
   resolveRuntimeLauncher,
-  resolveRuntimeRoot,
+  resolveRuntimeOverrideRoot,
   resolveRuntimeVersion,
 } = require("./runtime-paths");
 const { resolveElectronNodeExecPath } = require("./electron-node-exec");
+const { ensureManagedRuntime } = require("./runtime-installer");
 
 const DEFAULT_PORT = 18789;
 const READY_TIMEOUT_MS = 45_000;
@@ -29,6 +31,44 @@ const RESTART_DELAYS_MS = [1_000, 3_000, 5_000, 10_000];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isWindowsCommandPath(filePath) {
+  return Boolean(filePath) && /\.(cmd|bat)$/i.test(filePath);
+}
+
+async function collectCurrentUserProcesses() {
+  if (process.platform === "win32") {
+    return [];
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn("ps", ["-x", "-o", "pid=,command="], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.once("error", () => resolve([]));
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        resolve([]);
+        return;
+      }
+      const rows = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const match = line.match(/^(\d+)\s+(.*)$/);
+          if (!match) return null;
+          return { pid: Number.parseInt(match[1], 10), command: match[2] };
+        })
+        .filter(Boolean);
+      resolve(rows);
+    });
+  });
 }
 
 async function findAvailablePort(preferredPort) {
@@ -72,7 +112,12 @@ class RuntimeManager extends EventEmitter {
     this.app = app;
     this.shell = shell;
     this.devAppRoot = devAppRoot;
-    this.runtimeRoot = resolveRuntimeRoot({ app, devAppRoot });
+    this.runtimeOverrideRoot = resolveRuntimeOverrideRoot();
+    this.runtimeRoot = this.runtimeOverrideRoot || (app?.isPackaged ? null : resolveDevRuntimeRoot(devAppRoot));
+    this.runtimeSource = this.runtimeOverrideRoot ? "override" : app?.isPackaged ? "managed" : "dev";
+    this.runtimeLatestVersion = null;
+    this.runtimeTask = null;
+    this.runtimeCommand = null;
     this.stateDir = resolveDefaultStateDir();
     this.userDataDir = app.getPath("userData");
     this.logsDir = path.join(this.userDataDir, "logs");
@@ -85,6 +130,7 @@ class RuntimeManager extends EventEmitter {
     this.restartCount = 0;
     this.retryTimer = null;
     this.intentionalStop = false;
+    this.updatePromise = null;
     this.meta = this.loadMeta();
     this.health = {
       connected: false,
@@ -93,8 +139,24 @@ class RuntimeManager extends EventEmitter {
       restartCount: 0,
       pid: null,
       port: this.meta.port || DEFAULT_PORT,
-      version: resolveRuntimeVersion(this.runtimeRoot),
+      version: this.runtimeRoot ? resolveRuntimeVersion(this.runtimeRoot) : "unknown",
     };
+  }
+
+  emitState() {
+    const snapshot = this.getState();
+    this.emit("state", snapshot);
+    return snapshot;
+  }
+
+  setRuntimeTask(nextTask) {
+    this.runtimeTask = nextTask ? { ...nextTask } : null;
+    this.emitState();
+  }
+
+  clearRuntimeTask() {
+    this.runtimeTask = null;
+    this.emitState();
   }
 
   getConfigPath() {
@@ -156,7 +218,7 @@ class RuntimeManager extends EventEmitter {
     );
   }
 
-  ensureToken() {
+  ensureGatewayTokenConfig() {
     const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
     if (envToken) {
       this.meta.token = envToken;
@@ -164,11 +226,34 @@ class RuntimeManager extends EventEmitter {
       return envToken;
     }
 
-    if (!this.meta.token) {
-      this.meta.token = randomBytes(24).toString("base64url");
-      this.saveMeta();
-    }
-    return this.meta.token;
+    const config = this.readOpenClawConfig();
+    const configuredToken = typeof config?.gateway?.auth?.token === "string" && config.gateway.auth.token.trim() && !config.gateway.auth.token.includes("${")
+      ? config.gateway.auth.token.trim()
+      : null;
+
+    const token = configuredToken || this.meta.token || randomBytes(24).toString("base64url");
+    this.meta.token = token;
+    this.saveMeta();
+
+    const nextConfig = {
+      ...config,
+      gateway: {
+        ...(config.gateway || {}),
+        auth: {
+          ...((config.gateway && config.gateway.auth) || {}),
+          mode: "token",
+          token,
+        },
+      },
+    };
+
+    writeConfig(this.getConfigPath(), nextConfig);
+    return token;
+  }
+
+  resolveGatewayAuth() {
+    const token = this.ensureGatewayTokenConfig();
+    return { mode: "token", token };
   }
 
   setState(nextState, extra = {}) {
@@ -179,17 +264,17 @@ class RuntimeManager extends EventEmitter {
     }
     this.health.connected = nextState === "running";
     this.health.restartCount = this.restartCount;
-    const snapshot = this.getState();
-    this.emit("state", snapshot);
+    return this.emitState();
   }
 
   getConnectionInfo() {
     const port = this.health.port;
-    const token = this.ensureToken();
+    const auth = this.resolveGatewayAuth();
     return {
       wsUrl: `ws://127.0.0.1:${port}`,
       httpBaseUrl: `http://127.0.0.1:${port}`,
-      token,
+      token: auth.token || null,
+      authMode: auth.mode || null,
       deviceReady: true,
       localeDefault: "zh-CN",
     };
@@ -200,6 +285,10 @@ class RuntimeManager extends EventEmitter {
       state: this.state,
       lastError: this.lastError,
       runtimeRoot: this.runtimeRoot,
+      runtimeCommand: this.runtimeCommand,
+      runtimeSource: this.runtimeSource,
+      runtimeLatestVersion: this.runtimeLatestVersion,
+      runtimeTask: this.runtimeTask,
       stateDir: this.stateDir,
       configPath: this.getConfigPath(),
       logPath: this.logPath,
@@ -210,7 +299,154 @@ class RuntimeManager extends EventEmitter {
     };
   }
 
-  async start({ reason = "manual-start" } = {}) {
+  async resolveRuntimeRoot(nodeExecPath, { forceLatest = false } = {}) {
+    if (this.runtimeOverrideRoot) {
+      this.runtimeRoot = this.runtimeOverrideRoot;
+      this.runtimeSource = "override";
+      this.runtimeCommand = null;
+      this.runtimeLatestVersion = null;
+      this.health.version = resolveRuntimeVersion(this.runtimeRoot);
+      return this.runtimeRoot;
+    }
+
+    if (!this.app?.isPackaged) {
+      this.runtimeRoot = resolveDevRuntimeRoot(this.devAppRoot);
+      this.runtimeSource = "dev";
+      this.runtimeCommand = null;
+      this.runtimeLatestVersion = null;
+      this.health.version = resolveRuntimeVersion(this.runtimeRoot);
+      return this.runtimeRoot;
+    }
+
+    const resolved = await ensureManagedRuntime({
+      userDataDir: this.userDataDir,
+      nodeExecPath,
+      forceLatest,
+      onProgress: (task) => {
+        this.runtimeLatestVersion = task.latestVersion ?? this.runtimeLatestVersion;
+        this.health.version = task.version || this.health.version;
+        this.setRuntimeTask(task);
+      },
+    });
+
+    this.runtimeRoot = resolved.runtimeRoot;
+    this.runtimeSource = resolved.source;
+    this.runtimeCommand = resolved.runtimeCommand || null;
+    this.runtimeLatestVersion = resolved.latestVersion || null;
+    this.health.version = resolved.version || resolveRuntimeVersion(this.runtimeRoot);
+    return this.runtimeRoot;
+  }
+
+  buildRuntimeNotReadyMessage(buildProblems) {
+    if (this.runtimeOverrideRoot || !this.app?.isPackaged) {
+      return (
+        `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
+        "Run `npm run prepare:runtime` in the desktop app or point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime."
+      );
+    }
+
+    return (
+      `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
+      "Please ensure the current user can run `openclaw`, or let the app install it into the user HOME directory via `npm install openclaw`."
+    );
+  }
+
+  async buildRuntimeCommandInvocation(args) {
+    if (this.app?.isPackaged && this.runtimeCommand) {
+      if (isWindowsCommandPath(this.runtimeCommand)) {
+        return {
+          command: process.env.ComSpec || process.env.COMSPEC || "cmd.exe",
+          args: ["/d", "/s", "/c", this.runtimeCommand, ...args],
+        };
+      }
+      return { command: this.runtimeCommand, args };
+    }
+
+    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
+    return {
+      command: nodeExecPath,
+      args: [resolveRuntimeEntry(this.runtimeRoot), ...args],
+    };
+  }
+
+  async stopExistingUserGateway() {
+    if (!this.app?.isPackaged || !this.runtimeCommand) {
+      return;
+    }
+
+    this.setRuntimeTask({
+      phase: "stopping-existing-runtime",
+      progress: 18,
+      version: this.health.version,
+      latestVersion: this.runtimeLatestVersion,
+      message: "正在停止当前用户已有的 OpenClaw Gateway…",
+    });
+
+    try {
+      const invocation = await this.buildRuntimeCommandInvocation(["gateway", "stop", "--json"]);
+      await new Promise((resolve) => {
+        const child = spawn(invocation.command, invocation.args, {
+          cwd: this.runtimeRoot || process.cwd(),
+          env: { ...process.env, FORCE_COLOR: "0" },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.once("error", () => resolve());
+        child.once("exit", () => resolve());
+      });
+    } catch {
+      // ignore and continue with best-effort process cleanup
+    }
+
+    if (process.platform === "win32") {
+      return;
+    }
+
+    await sleep(1200);
+
+    const processes = await collectCurrentUserProcesses();
+    const candidates = processes.filter((entry) => {
+      if (!entry || !Number.isFinite(entry.pid) || entry.pid <= 0) {
+        return false;
+      }
+      if (entry.pid === process.pid) {
+        return false;
+      }
+      const command = String(entry.command || "");
+      if (!command) {
+        return false;
+      }
+      if (command.includes("openclaw-desktop")) {
+        return false;
+      }
+      return /(^|\/)openclaw-gateway(\s|$)/.test(command)
+        || /(^|\s)openclaw(\s|$).*gateway.*run/.test(command);
+    });
+
+    for (const entry of candidates) {
+      try {
+        process.kill(entry.pid, "SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    await sleep(1500);
+
+    for (const entry of candidates) {
+      try {
+        process.kill(entry.pid, 0);
+        process.kill(entry.pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  async start({ reason = "manual-start", skipRuntimeResolve = false } = {}) {
     if (this.child || this.state === "starting" || this.state === "running") {
       return this.getState();
     }
@@ -219,18 +455,37 @@ class RuntimeManager extends EventEmitter {
     this.retryTimer = null;
     this.intentionalStop = false;
 
-    const buildProblems = resolveRuntimeBuildProblems(this.runtimeRoot);
-    if (buildProblems.length > 0) {
+    fs.mkdirSync(this.stateDir, { recursive: true });
+    fs.mkdirSync(this.logsDir, { recursive: true });
+
+    this.setState("starting", { lastError: null });
+
+    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
+
+    try {
+      const shouldResolveRuntime = !skipRuntimeResolve
+        && !(reason === "auto-restart" && this.runtimeRoot);
+      if (shouldResolveRuntime || !this.runtimeRoot) {
+        await this.resolveRuntimeRoot(nodeExecPath);
+      }
+    } catch (error) {
       this.setState("crashed", {
-        lastError:
-          `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
-          "Run `npm run prepare:runtime` in the desktop app or point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime.",
+        lastError: `Failed to prepare OpenClaw runtime: ${error.message}`,
       });
       return this.getState();
     }
 
-    fs.mkdirSync(this.stateDir, { recursive: true });
-    fs.mkdirSync(this.logsDir, { recursive: true });
+    const buildProblems = resolveRuntimeBuildProblems(this.runtimeRoot);
+    if (buildProblems.length > 0) {
+      this.setState("crashed", {
+        lastError: this.buildRuntimeNotReadyMessage(buildProblems),
+      });
+      return this.getState();
+    }
+
+    if (this.app?.isPackaged) {
+      await this.stopExistingUserGateway();
+    }
 
     const preferredPort = this.meta.port || DEFAULT_PORT;
     const port = await findAvailablePort(preferredPort);
@@ -238,10 +493,9 @@ class RuntimeManager extends EventEmitter {
     this.meta.port = port;
     this.saveMeta();
 
-    const token = this.ensureToken();
+    const gatewayAuth = this.resolveGatewayAuth();
     const runtimeEntry = resolveRuntimeEntry(this.runtimeRoot);
     const runtimeLauncher = resolveRuntimeLauncher(this.runtimeRoot);
-    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
     const runtimeArgs = [
       "gateway",
       "run",
@@ -255,20 +509,32 @@ class RuntimeManager extends EventEmitter {
     const env = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
-      OPENCLAW_GATEWAY_TOKEN: token,
       OPENCLAW_STATE_DIR: this.stateDir,
       OPENCLAW_CONFIG_PATH: this.getConfigPath(),
       OPENCLAW_DESKTOP_NODE_EXEC: nodeExecPath,
       FORCE_COLOR: "0",
     };
+    if (gatewayAuth.token) {
+      env.OPENCLAW_GATEWAY_TOKEN = gatewayAuth.token;
+    }
     const out = fs.createWriteStream(this.logPath, { flags: "a" });
 
-    this.setState("starting", { lastError: null });
+    this.setRuntimeTask({
+      phase: "starting-runtime",
+      progress: 96,
+      version: this.health.version,
+      latestVersion: this.runtimeLatestVersion,
+      message: `正在启动 OpenClaw v${this.health.version}…`,
+    });
 
     let runtimeCommand = nodeExecPath;
     let runtimeCommandArgs = [runtimeEntry, ...runtimeArgs];
 
-    if (runtimeLauncher) {
+    if (this.app?.isPackaged && this.runtimeCommand) {
+      const invocation = await this.buildRuntimeCommandInvocation(runtimeArgs);
+      runtimeCommand = invocation.command;
+      runtimeCommandArgs = invocation.args;
+    } else if (runtimeLauncher) {
       if (process.platform === "win32") {
         runtimeCommand = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
         runtimeCommandArgs = ["/d", "/s", "/c", runtimeLauncher, ...runtimeArgs];
@@ -278,15 +544,11 @@ class RuntimeManager extends EventEmitter {
       }
     }
 
-    const child = spawn(
-      runtimeCommand,
-      runtimeCommandArgs,
-      {
-        cwd: this.runtimeRoot,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(runtimeCommand, runtimeCommandArgs, {
+      cwd: this.runtimeRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     this.child = child;
     this.health.pid = child.pid ?? null;
@@ -321,9 +583,20 @@ class RuntimeManager extends EventEmitter {
     try {
       await this.waitUntilReady();
       this.health.lastHelloAt = Date.now();
+      this.restartCount = 0;
+      this.clearRuntimeTask();
       this.setState("running", { lastError: null });
     } catch (error) {
-      this.scheduleRestart(`OpenClaw runtime failed to become ready after ${reason}: ${error.message}`);
+      const failureMessage = `OpenClaw runtime failed to become ready after ${reason}: ${error.message}`;
+      if (this.retryTimer || this.state === "crashed") {
+        return this.getState();
+      }
+      if (this.child) {
+        this.intentionalStop = true;
+        await this.stop();
+        this.intentionalStop = false;
+      }
+      this.scheduleRestart(failureMessage);
     }
 
     return this.getState();
@@ -334,6 +607,9 @@ class RuntimeManager extends EventEmitter {
     const url = `${this.getConnectionInfo().httpBaseUrl}/`;
 
     while (Date.now() < deadline) {
+      if (!this.child) {
+        throw new Error("runtime process exited before gateway became ready");
+      }
       try {
         const response = await fetch(url, { method: "GET" });
         if (response.ok) {
@@ -352,6 +628,14 @@ class RuntimeManager extends EventEmitter {
     clearTimeout(this.retryTimer);
     const delay = RESTART_DELAYS_MS[Math.min(this.restartCount, RESTART_DELAYS_MS.length - 1)];
     this.restartCount += 1;
+    this.setRuntimeTask({
+      phase: "retrying",
+      progress: 100,
+      version: this.health.version,
+      latestVersion: this.runtimeLatestVersion,
+      message: `启动失败，${delay / 1000}s 后自动重试…`,
+      detail: message,
+    });
     this.setState("crashed", { lastError: `${message}; retrying in ${delay / 1000}s` });
     this.retryTimer = setTimeout(() => {
       void this.start({ reason: "auto-restart" });
@@ -363,11 +647,19 @@ class RuntimeManager extends EventEmitter {
     this.retryTimer = null;
 
     if (!this.child) {
+      this.clearRuntimeTask();
       this.setState("stopped", { lastError: null });
       return this.getState();
     }
 
     this.intentionalStop = true;
+    this.setRuntimeTask({
+      phase: "stopping-runtime",
+      progress: 100,
+      version: this.health.version,
+      latestVersion: this.runtimeLatestVersion,
+      message: "正在停止 OpenClaw runtime…",
+    });
     this.setState("stopping", { lastError: null });
 
     const child = this.child;
@@ -393,12 +685,151 @@ class RuntimeManager extends EventEmitter {
       }
     });
 
+    this.clearRuntimeTask();
     return this.getState();
   }
 
   async restart() {
     await this.stop();
     return this.start({ reason: "manual-restart" });
+  }
+
+  supportsManagedRuntimeUpdates() {
+    return Boolean(this.app?.isPackaged) && !this.runtimeOverrideRoot;
+  }
+
+  async updateRuntime() {
+    if (!this.supportsManagedRuntimeUpdates()) {
+      return this.getState();
+    }
+
+    if (this.state === "starting" || this.state === "stopping") {
+      return this.getState();
+    }
+
+    if (this.updatePromise) {
+      return this.updatePromise;
+    }
+
+    const task = (async () => {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+
+      const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
+
+      try {
+        await this.resolveRuntimeRoot(nodeExecPath);
+      } catch (error) {
+        this.setState("crashed", {
+          lastError: `Failed to prepare OpenClaw runtime update: ${error.message}`,
+        });
+        return this.getState();
+      }
+
+      await this.stop();
+
+      const runtimeEntry = resolveRuntimeEntry(this.runtimeRoot);
+      const gatewayAuth = this.resolveGatewayAuth();
+      const env = {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        OPENCLAW_STATE_DIR: this.stateDir,
+        OPENCLAW_CONFIG_PATH: this.getConfigPath(),
+        OPENCLAW_DESKTOP_NODE_EXEC: nodeExecPath,
+        FORCE_COLOR: "0",
+      };
+      if (gatewayAuth.token) {
+        env.OPENCLAW_GATEWAY_TOKEN = gatewayAuth.token;
+      }
+
+      this.setRuntimeTask({
+        phase: "updating-runtime",
+        progress: 12,
+        version: this.health.version,
+        latestVersion: this.runtimeLatestVersion,
+        message: "正在在线更新 OpenClaw runtime…",
+      });
+
+      let updateCommand = nodeExecPath;
+      let updateArgs = [runtimeEntry, "update", "--yes", "--no-restart", "--json"];
+      if (this.app?.isPackaged && this.runtimeCommand) {
+        if (process.platform === "win32" && /\.(cmd|bat)$/i.test(this.runtimeCommand)) {
+          updateCommand = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
+          updateArgs = ["/d", "/s", "/c", this.runtimeCommand, "update", "--yes", "--no-restart", "--json"];
+        } else {
+          updateCommand = this.runtimeCommand;
+          updateArgs = ["update", "--yes", "--no-restart", "--json"];
+        }
+      }
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(updateCommand, updateArgs, {
+          cwd: this.runtimeRoot,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let progress = 16;
+        const recentLines = [];
+        const pushLine = (chunk) => {
+          const text = String(chunk || "").trim();
+          if (!text) {
+            return;
+          }
+          recentLines.push(text);
+          while (recentLines.length > 20) recentLines.shift();
+          this.setRuntimeTask({
+            phase: "updating-runtime",
+            progress,
+            version: this.health.version,
+            latestVersion: this.runtimeLatestVersion,
+            message: "正在在线更新 OpenClaw runtime…",
+            detail: text,
+          });
+        };
+        const tick = setInterval(() => {
+          progress = Math.min(progress + 2, 92);
+          this.setRuntimeTask({
+            phase: "updating-runtime",
+            progress,
+            version: this.health.version,
+            latestVersion: this.runtimeLatestVersion,
+            message: "正在在线更新 OpenClaw runtime…",
+          });
+        }, 1000);
+        child.stdout.on("data", pushLine);
+        child.stderr.on("data", pushLine);
+        child.once("error", (error) => {
+          clearInterval(tick);
+          reject(error);
+        });
+        child.once("exit", (code) => {
+          clearInterval(tick);
+          if (code === 0) {
+            resolve({ recentLines });
+            return;
+          }
+          const extra = recentLines.length ? `\n${recentLines.join("\n")}` : "";
+          reject(new Error(`openclaw update failed with code ${code}${extra}`));
+        });
+      });
+
+      this.health.version = resolveRuntimeVersion(this.runtimeRoot) || this.health.version;
+      this.setRuntimeTask({
+        phase: "ready",
+        progress: 100,
+        version: this.health.version,
+        latestVersion: this.runtimeLatestVersion,
+        message: `OpenClaw runtime 已更新到 v${this.health.version}，正在重启…`,
+        detail: result.recentLines?.slice(-5).join("\n") || null,
+      });
+
+      return this.start({ reason: "manual-update", skipRuntimeResolve: true });
+    })();
+
+    this.updatePromise = task.finally(() => {
+      this.updatePromise = null;
+    });
+
+    return this.updatePromise;
   }
 
   async openConfigDir() {

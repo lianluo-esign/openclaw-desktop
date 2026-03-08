@@ -38,6 +38,17 @@ const BACKUP_LABELS = {
   restoring: '回滚中',
 };
 
+const RUNTIME_UPDATE_BUSY_PHASES = new Set([
+  'checking-local',
+  'checking-latest',
+  'installing',
+  'finalizing',
+  'starting-runtime',
+  'stopping-runtime',
+  'stopping-existing-runtime',
+  'updating-runtime',
+]);
+
 function isNavigationAbort(error) {
   return Boolean(
     error
@@ -196,6 +207,11 @@ function createTray() {
 }
 
 function buildMenu() {
+  const runtimeSnapshot = runtimeManager?.getState() || { state: 'stopped', runtimeTask: null };
+  const runtimeUpdateBusy = runtimeSnapshot.state === 'starting'
+    || runtimeSnapshot.state === 'stopping'
+    || RUNTIME_UPDATE_BUSY_PHASES.has(runtimeSnapshot.runtimeTask?.phase);
+  const canUpdateRuntime = Boolean(runtimeManager?.supportsManagedRuntimeUpdates?.()) && !runtimeUpdateBusy;
   const backupState = getBackupState();
   const backupEnabled = backupManager?.getState().enabled !== false;
   const backupBusy = backupState === 'starting' || backupState === 'stopping' || backupState === 'backing-up' || backupState === 'restoring';
@@ -234,6 +250,14 @@ function buildMenu() {
         { type: 'separator' },
         { label: '启动 OpenClaw', click: () => void runtimeManager.start() },
         { label: '重启 OpenClaw', click: () => void runtimeManager.restart() },
+        {
+          label: '在线更新并重启',
+          enabled: canUpdateRuntime,
+          click: () => {
+            showMainWindow({ showSplash: true });
+            void runtimeManager.updateRuntime();
+          },
+        },
         { label: '停止 OpenClaw', click: () => void runtimeManager.stop() },
         { type: 'separator' },
         { label: '打开配置目录', click: () => void runtimeManager.openConfigDir() },
@@ -322,7 +346,9 @@ async function loadGatewayUi() {
 
   const targetWindow = mainWindow;
   const connection = runtimeManager.getConnectionInfo();
-  const targetUrl = `${connection.httpBaseUrl}/#token=${encodeURIComponent(connection.token)}`;
+  const targetUrl = connection.token
+    ? `${connection.httpBaseUrl}/#token=${encodeURIComponent(connection.token)}`
+    : `${connection.httpBaseUrl}/`;
   const currentUrl = targetWindow.webContents.getURL();
   if (currentUrl.startsWith(connection.httpBaseUrl)) {
     return;
@@ -471,6 +497,10 @@ function registerIpc() {
   ipcMain.handle('desktop-runtime:start', async () => runtimeManager.start());
   ipcMain.handle('desktop-runtime:stop', async () => runtimeManager.stop());
   ipcMain.handle('desktop-runtime:restart', async () => runtimeManager.restart());
+  ipcMain.handle('desktop-runtime:update', async () => {
+    showMainWindow({ showSplash: true });
+    return runtimeManager.updateRuntime();
+  });
   ipcMain.handle('desktop-runtime:get-connection-info', async () => runtimeManager.getConnectionInfo());
   ipcMain.handle('desktop-runtime:open-home', async () => openGatewayHome());
   ipcMain.handle('desktop-runtime:open-config-dir', async () => runtimeManager.openConfigDir());

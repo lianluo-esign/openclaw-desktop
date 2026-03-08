@@ -20,6 +20,57 @@ function formatTime(value) {
   }
 }
 
+function runtimeTaskLabel(phase) {
+  const labels = {
+    'checking-local': '检查本地 runtime',
+    'checking-latest': '检查最新版本',
+    bootstrapping: '准备内置 runtime',
+    installing: '下载并安装 runtime',
+    finalizing: '整理运行目录',
+    ready: 'runtime 已就绪',
+    'using-cached': '使用本地缓存版本',
+    'starting-runtime': '启动 runtime',
+    'stopping-runtime': '停止 runtime',
+    'stopping-existing-runtime': '停止已有 runtime',
+    'updating-runtime': '在线更新 runtime',
+    retrying: '等待自动重试',
+  };
+  return labels[phase] || '准备中';
+}
+
+function applyRuntimeTask(task) {
+  const wrapper = document.getElementById('runtime-progress');
+  const label = document.getElementById('runtime-progress-label');
+  const value = document.getElementById('runtime-progress-value');
+  const bar = document.getElementById('runtime-progress-bar');
+  const detail = document.getElementById('runtime-progress-detail');
+
+  if (!task) {
+    wrapper.classList.add('hidden');
+    detail.classList.add('hidden');
+    detail.textContent = '';
+    bar.style.width = '0%';
+    value.textContent = '';
+    label.textContent = '准备中';
+    return;
+  }
+
+  wrapper.classList.remove('hidden');
+  const progress = Number.isFinite(Number(task.progress)) ? Math.max(0, Math.min(100, Number(task.progress))) : null;
+  label.textContent = runtimeTaskLabel(task.phase);
+  value.textContent = progress == null ? '处理中' : `${Math.round(progress)}%`;
+  bar.style.width = progress == null ? '100%' : `${progress}%`;
+
+  const detailParts = [task.message, task.detail].filter(Boolean);
+  if (detailParts.length > 0) {
+    detail.textContent = detailParts.join('\n');
+    detail.classList.remove('hidden');
+  } else {
+    detail.textContent = '';
+    detail.classList.add('hidden');
+  }
+}
+
 function formatBytes(value) {
   const size = Number(value);
   if (!Number.isFinite(size) || size <= 0) {
@@ -122,7 +173,9 @@ function applyState(snapshot) {
   pill.textContent = labelMap[state] || '未就绪';
   pill.className = `pill pill-${state}`;
 
-  if (state === 'running') {
+  if (snapshot?.runtimeTask?.message) {
+    detail.textContent = snapshot.runtimeTask.message;
+  } else if (state === 'running') {
     detail.textContent = 'OpenClaw runtime 已经可用，主窗口会自动跳转到控制台。';
   } else if (state === 'starting') {
     detail.textContent = '正在启动本地 OpenClaw runtime，请稍候…';
@@ -133,6 +186,8 @@ function applyState(snapshot) {
   } else {
     detail.textContent = 'Runtime 当前未运行，可以点击启动手动拉起。';
   }
+
+  applyRuntimeTask(snapshot?.runtimeTask);
 
   if (snapshot?.lastError) {
     errorNode.textContent = snapshot.lastError;
@@ -147,6 +202,7 @@ function applyState(snapshot) {
 
   text('http-url', snapshot?.connection?.httpBaseUrl);
   text('ws-url', snapshot?.connection?.wsUrl);
+  text('runtime-root', snapshot?.runtimeRoot);
   text('state-dir', snapshot?.stateDir);
   text('log-path', snapshot?.logPath);
   applyBackup(snapshot);

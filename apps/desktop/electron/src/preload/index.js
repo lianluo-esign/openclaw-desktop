@@ -11,6 +11,7 @@ function createApi() {
     start: () => ipcRenderer.invoke("desktop-runtime:start"),
     stop: () => ipcRenderer.invoke("desktop-runtime:stop"),
     restart: () => ipcRenderer.invoke("desktop-runtime:restart"),
+    update: () => ipcRenderer.invoke("desktop-runtime:update"),
     getConnectionInfo: () => ipcRenderer.invoke("desktop-runtime:get-connection-info"),
     openHome: () => ipcRenderer.invoke("desktop-runtime:open-home"),
     openConfigDir: () => ipcRenderer.invoke("desktop-runtime:open-config-dir"),

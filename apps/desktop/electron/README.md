@@ -12,7 +12,8 @@
 - 原生菜单 `运行时 -> 打开配置向导` 可随时重新打开 UI 内向导
 - 向导现在包含欢迎页、字段校验、完成后进入聊天，以及“填充测试消息”快捷动作
 - 桌面菜单与页面浮层支持启动、停止、重启、打开日志/配置目录、导出诊断信息
-- 打包前可通过 `prepare:runtime` 预构建并预置 OpenClaw runtime 资源
+- 已打包应用以纯壳模式运行，并在用户私有目录中在线安装/更新 OpenClaw runtime
+- 已打包应用会在用户私有目录下维护独立 runtime 版本，并在启动页展示检查/下载/更新进度
 
 ## 开发
 
@@ -26,11 +27,12 @@ npm run dev
 ## 打包前准备
 
 ```bash
-npm run prepare:runtime
 npm run package
 ```
 
-`prepare:runtime` 会在 `apps/desktop/electron/openclaw-runtime` 生成打包所需的 OpenClaw runtime 目录。该目录现在只保留运行时必需资源、生产依赖，以及供 Electron 直接调用的 `bin/openclaw-gateway` 启动器。
+打包后的桌面应用以纯壳模式运行：启动时会优先检查用户私有 runtime 目录（位于 Electron `userData/runtime/releases/<version>`），如果本地没有可用版本，就会联网从 npm 安装最新的 `openclaw`。若已有已安装版本，则会在启动时检查更新，并在下载失败时回退到本地缓存版本。启动页会显示检查、下载、安装、整理与启动阶段的进度。
+
+开发态仍可通过仓库内 `docs/openclaw` 直接运行；`prepare:runtime` 仅保留给旧的本地调试/兼容场景，不再参与正式打包。
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 

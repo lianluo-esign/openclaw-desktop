@@ -3,49 +3,6 @@ const path = require('node:path');
 
 const { buildLinuxLauncherScript } = require('../src/main/linux-launcher');
 
-function resolveBundledRuntimeRoots(context) {
-  const roots = [];
-
-  if (context.electronPlatformName === 'darwin') {
-    roots.push(
-      path.join(
-        context.appOutDir,
-        `${context.packager.appInfo.productFilename}.app`,
-        'Contents',
-        'Resources',
-        'openclaw-runtime',
-      ),
-    );
-  }
-
-  roots.push(path.join(context.appOutDir, 'resources', 'openclaw-runtime'));
-  return roots;
-}
-
-async function restoreBundledRuntimeNodeModules(context) {
-  const sourceNodeModules = path.join(__dirname, '..', 'openclaw-runtime', 'node_modules');
-
-  for (const runtimeRoot of resolveBundledRuntimeRoots(context)) {
-    const targetNodeModules = path.join(runtimeRoot, 'node_modules');
-    await fs.rm(targetNodeModules, { recursive: true, force: true });
-    await fs.cp(sourceNodeModules, targetNodeModules, {
-      recursive: true,
-      force: true,
-      verbatimSymlinks: true,
-    });
-  }
-}
-
-async function chmodBundledRuntimeLaunchers(context) {
-  if (context.electronPlatformName === 'win32') {
-    return;
-  }
-
-  for (const runtimeRoot of resolveBundledRuntimeRoots(context)) {
-    await chmodExecutable(path.join(runtimeRoot, 'bin', 'openclaw-gateway'));
-  }
-}
-
 async function chmodExecutable(filePath) {
   try {
     await fs.chmod(filePath, 0o755);
@@ -98,12 +55,9 @@ async function prepareLinuxLauncher(context) {
 }
 
 module.exports = async function afterPack(context) {
-  await restoreBundledRuntimeNodeModules(context);
-
   if (context.electronPlatformName === 'linux') {
     await prepareLinuxLauncher(context);
   }
 
-  await chmodBundledRuntimeLaunchers(context);
   await chmodPlatformExecutable(context);
 };
