@@ -1,5 +1,4 @@
 import * as fsSync from "node:fs";
-import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
@@ -37,10 +36,22 @@ function emitProgress(onProgress: ProgressHandler | undefined, next: RuntimeInst
   }
 }
 
+function uniqPaths(candidates: string[]): string[] {
+  return [...new Set(candidates.filter(Boolean).map((value) => path.resolve(value)))];
+}
+
+function readPackageJson(packageRoot: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(fsSync.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export function readRuntimeVersion(runtimeRoot: string | null | undefined): string | null {
   if (!runtimeRoot) return null;
   try {
-    const pkg = JSON.parse(fsSync.readFileSync(path.join(runtimeRoot, "package.json"), "utf8"));
+    const pkg = readPackageJson(runtimeRoot);
     return typeof pkg?.version === "string" && pkg.version.trim() ? pkg.version.trim() : null;
   } catch {
     return null;
@@ -59,16 +70,68 @@ function homeInstallRoot(): string {
   return path.join(homeDir(), "node_modules", PACKAGE_NAME);
 }
 
+function runtimeCommandNames(): string[] {
+  if (process.platform === "win32") {
+    return ["openclaw.cmd", "openclaw.exe", "openclaw.bat", "openclaw.mjs", "openclaw.js", "openclaw"];
+  }
+  if (process.platform === "darwin") {
+    return ["openclaw.mjs", "openclaw", "openclaw.js", "openclaw.cjs"];
+  }
+  return ["openclaw", "openclaw.mjs", "openclaw.js", "openclaw.cjs"];
+}
+
+function resolvePackageJsonBinCandidates(packageRoot: string): string[] {
+  const pkg = readPackageJson(packageRoot);
+  if (!pkg) {
+    return [];
+  }
+
+  const candidates: string[] = [];
+  const appendCandidate = (value: unknown) => {
+    if (typeof value !== "string" || !value.trim()) {
+      return;
+    }
+    candidates.push(path.resolve(packageRoot, value.trim()));
+  };
+
+  if (typeof pkg.bin === "string") {
+    appendCandidate(pkg.bin);
+  } else if (pkg.bin && typeof pkg.bin === "object") {
+    const bin = pkg.bin as Record<string, unknown>;
+    appendCandidate(bin[PACKAGE_NAME]);
+    for (const value of Object.values(bin)) {
+      appendCandidate(value);
+    }
+  }
+
+  return uniqPaths(candidates);
+}
+
+function resolveHomePackageCommandCandidates(): string[] {
+  const runtimeRoot = homeInstallRoot();
+  return uniqPaths([
+    ...resolvePackageJsonBinCandidates(runtimeRoot),
+    ...runtimeCommandNames().map((name) => path.join(runtimeRoot, name)),
+    ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "bin", name)),
+    ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "dist", name)),
+  ]);
+}
+
 function homeCommandCandidates(): string[] {
   const binDir = path.join(homeDir(), "node_modules", ".bin");
-  if (process.platform === "win32") {
-    return [
+  const binCandidates = process.platform === "win32"
+    ? [
       path.join(binDir, "openclaw.cmd"),
       path.join(binDir, "openclaw.exe"),
       path.join(binDir, "openclaw.bat"),
-    ];
+    ]
+    : [path.join(binDir, "openclaw")];
+
+  const packageCandidates = resolveHomePackageCommandCandidates();
+  if (process.platform === "darwin") {
+    return uniqPaths([...packageCandidates, ...binCandidates]);
   }
-  return [path.join(binDir, "openclaw")];
+  return uniqPaths([...binCandidates, ...packageCandidates]);
 }
 
 function pathCommandNames(): string[] {
@@ -101,22 +164,28 @@ function findCommandOnPath(): string | null {
 function resolvePackageRootFromCommand(commandPath: string): string | null {
   try {
     const realCommand = fsSync.realpathSync(commandPath);
-    const candidates = [
-      path.dirname(realCommand),
-      path.resolve(path.dirname(realCommand), "..", PACKAGE_NAME),
-      path.resolve(path.dirname(realCommand), "..", "lib", "node_modules", PACKAGE_NAME),
-      homeInstallRoot(),
-    ];
-    for (const candidate of candidates) {
-      const pkgPath = path.join(candidate, "package.json");
-      if (!fsSync.existsSync(pkgPath)) {
-        continue;
+    const stats = fsSync.statSync(realCommand);
+    let current = stats.isDirectory() ? realCommand : path.dirname(realCommand);
+    const candidates: string[] = [current];
+
+    while (true) {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        break;
       }
-      const pkg = JSON.parse(fsSync.readFileSync(pkgPath, "utf8"));
+      candidates.push(parent);
+      current = parent;
+    }
+
+    candidates.push(homeInstallRoot());
+
+    for (const candidate of uniqPaths(candidates)) {
+      const pkg = readPackageJson(candidate);
       if (pkg?.name === PACKAGE_NAME) {
         return candidate;
       }
     }
+
     return null;
   } catch {
     return null;
@@ -156,7 +225,7 @@ async function runInstallCommand(params: { nodeExecPath: string; onProgress?: Pr
   const args = [
     ...invocation.argsPrefix,
     "install",
-    PACKAGE_NAME,
+    `${PACKAGE_NAME}@latest`,
     "--no-fund",
     "--no-audit",
     "--loglevel",
@@ -166,7 +235,7 @@ async function runInstallCommand(params: { nodeExecPath: string; onProgress?: Pr
   emitProgress(onProgress, {
     phase: "installing",
     progress: 24,
-    message: `正在用户目录 ${cwd} 安装 OpenClaw…`,
+    message: `正在用户目录 ${cwd} 安装 OpenClaw 最新版…`,
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -226,15 +295,7 @@ async function runInstallCommand(params: { nodeExecPath: string; onProgress?: Pr
   });
 }
 
-async function resolveExistingRuntime(): Promise<RuntimeInfo | null> {
-  const pathCommand = findCommandOnPath();
-  if (pathCommand) {
-    const inspected = inspectRuntimeFromCommand(pathCommand, "path");
-    if (inspected) {
-      return inspected;
-    }
-  }
-
+function resolveHomeInstalledRuntime(): RuntimeInfo | null {
   for (const candidate of homeCommandCandidates()) {
     if (!fsSync.existsSync(candidate)) {
       continue;
@@ -244,8 +305,23 @@ async function resolveExistingRuntime(): Promise<RuntimeInfo | null> {
       return inspected;
     }
   }
-
   return null;
+}
+
+async function resolveExistingRuntime(): Promise<RuntimeInfo | null> {
+  if (process.platform === "darwin") {
+    return resolveHomeInstalledRuntime();
+  }
+
+  const pathCommand = findCommandOnPath();
+  if (pathCommand) {
+    const inspected = inspectRuntimeFromCommand(pathCommand, "path");
+    if (inspected) {
+      return inspected;
+    }
+  }
+
+  return resolveHomeInstalledRuntime();
 }
 
 export async function ensureManagedRuntime(params: { userDataDir: string; nodeExecPath: string; onProgress?: ProgressHandler }): Promise<ManagedRuntimeResult> {
@@ -253,7 +329,9 @@ export async function ensureManagedRuntime(params: { userDataDir: string; nodeEx
   emitProgress(onProgress, {
     phase: "checking-local",
     progress: 8,
-    message: "正在搜索当前用户可用的 OpenClaw 命令…",
+    message: process.platform === "darwin"
+      ? "正在用户 HOME 目录搜索 OpenClaw runtime…"
+      : "正在搜索当前用户可用的 OpenClaw 命令…",
   });
 
   const installed = await resolveExistingRuntime();

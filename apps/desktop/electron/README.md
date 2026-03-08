@@ -12,8 +12,9 @@
 - 原生菜单 `运行时 -> 打开配置向导` 可随时重新打开 UI 内向导
 - 向导现在包含欢迎页、字段校验、完成后进入聊天，以及“填充测试消息”快捷动作
 - 桌面菜单与页面浮层支持启动、停止、重启、打开日志/配置目录、导出诊断信息
-- 已打包应用以纯壳模式运行，并直接复用当前用户已安装的官方 `openclaw` 命令
-- 如果当前用户还没有 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw` 后再启动
+- 已打包应用以纯壳模式运行，并直接复用当前用户已安装的官方 `openclaw` runtime
+- macOS 会优先在 `~/node_modules/openclaw` 内搜索官方入口（包含 `openclaw.mjs`）并直接作为启动命令
+- 如果当前用户还没有 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw@latest` 后再启动
 
 ## 开发
 
@@ -22,7 +23,7 @@ npm install
 npm run dev
 ```
 
-开发态与打包态现在都优先搜索当前用户可用的 `openclaw` 命令；也可通过 `OPENCLAW_DESKTOP_RUNTIME_DIR` 显式覆盖 runtime 根目录。
+开发态与打包态现在都会优先复用当前用户可用的官方 runtime；其中 macOS 优先检查 `~/node_modules/openclaw`，也可通过 `OPENCLAW_DESKTOP_RUNTIME_DIR` 显式覆盖 runtime 根目录。
 
 ## 打包前准备
 
@@ -30,7 +31,7 @@ npm run dev
 npm run package
 ```
 
-打包后的桌面应用以纯壳模式运行：启动时会优先搜索当前用户环境中的 `openclaw` 命令，并把该官方安装位置作为 runtime。若当前用户尚未安装 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw`，然后再启动。启动页会显示检查、安装、停止已有 Gateway、更新与启动阶段的进度。
+打包后的桌面应用以纯壳模式运行：启动时会优先复用当前用户已有的官方 `openclaw` runtime。macOS 会优先在 `~/node_modules/openclaw` 中定位真实入口文件（如 `openclaw.mjs`）并用它作为启动命令；若当前用户尚未安装 `openclaw`，桌面端会在用户 `HOME` 目录执行 `npm install openclaw@latest`，然后再启动。启动页会显示检查、安装、停止已有 Gateway、更新与启动阶段的进度。
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 

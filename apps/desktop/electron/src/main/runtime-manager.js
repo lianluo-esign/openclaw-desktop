@@ -36,6 +36,10 @@ function isWindowsCommandPath(filePath) {
   return Boolean(filePath) && /\.(cmd|bat)$/i.test(filePath);
 }
 
+function isNodeScriptPath(filePath) {
+  return Boolean(filePath) && /\.(mjs|cjs|js)$/i.test(filePath);
+}
+
 async function collectCurrentUserProcesses() {
   if (process.platform === "win32") {
     return [];
@@ -342,6 +346,8 @@ class RuntimeManager extends EventEmitter {
   }
 
   async buildRuntimeCommandInvocation(args) {
+    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
+
     if (this.app?.isPackaged && this.runtimeCommand) {
       if (isWindowsCommandPath(this.runtimeCommand)) {
         return {
@@ -349,10 +355,15 @@ class RuntimeManager extends EventEmitter {
           args: ["/d", "/s", "/c", this.runtimeCommand, ...args],
         };
       }
+      if (isNodeScriptPath(this.runtimeCommand)) {
+        return {
+          command: nodeExecPath,
+          args: [this.runtimeCommand, ...args],
+        };
+      }
       return { command: this.runtimeCommand, args };
     }
 
-    const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
     return {
       command: nodeExecPath,
       args: [resolveRuntimeEntry(this.runtimeRoot), ...args],
@@ -740,17 +751,9 @@ class RuntimeManager extends EventEmitter {
         message: "正在在线更新 OpenClaw runtime…",
       });
 
-      let updateCommand = nodeExecPath;
-      let updateArgs = [runtimeEntry, "update", "--yes", "--no-restart", "--json"];
-      if (this.app?.isPackaged && this.runtimeCommand) {
-        if (process.platform === "win32" && /\.(cmd|bat)$/i.test(this.runtimeCommand)) {
-          updateCommand = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
-          updateArgs = ["/d", "/s", "/c", this.runtimeCommand, "update", "--yes", "--no-restart", "--json"];
-        } else {
-          updateCommand = this.runtimeCommand;
-          updateArgs = ["update", "--yes", "--no-restart", "--json"];
-        }
-      }
+      const updateInvocation = await this.buildRuntimeCommandInvocation(["update", "--yes", "--no-restart", "--json"]);
+      const updateCommand = updateInvocation.command;
+      const updateArgs = updateInvocation.args;
       const result = await new Promise((resolve, reject) => {
         const child = spawn(updateCommand, updateArgs, {
           cwd: this.runtimeRoot,
