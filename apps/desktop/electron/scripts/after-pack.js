@@ -3,30 +3,37 @@ const path = require('node:path');
 
 const { buildLinuxLauncherScript } = require('../src/main/linux-launcher');
 
-function resolveBundledRuntimeRoot(context) {
+function resolveBundledRuntimeRoots(context) {
+  const roots = [];
+
   if (context.electronPlatformName === 'darwin') {
-    return path.join(
-      context.appOutDir,
-      `${context.packager.appInfo.productFilename}.app`,
-      'Contents',
-      'Resources',
-      'openclaw-runtime',
+    roots.push(
+      path.join(
+        context.appOutDir,
+        `${context.packager.appInfo.productFilename}.app`,
+        'Contents',
+        'Resources',
+        'openclaw-runtime',
+      ),
     );
   }
 
-  return path.join(context.appOutDir, 'resources', 'openclaw-runtime');
+  roots.push(path.join(context.appOutDir, 'resources', 'openclaw-runtime'));
+  return roots;
 }
 
 async function restoreBundledRuntimeNodeModules(context) {
   const sourceNodeModules = path.join(__dirname, '..', 'openclaw-runtime', 'node_modules');
-  const targetNodeModules = path.join(resolveBundledRuntimeRoot(context), 'node_modules');
 
-  await fs.rm(targetNodeModules, { recursive: true, force: true });
-  await fs.cp(sourceNodeModules, targetNodeModules, {
-    recursive: true,
-    force: true,
-    verbatimSymlinks: true,
-  });
+  for (const runtimeRoot of resolveBundledRuntimeRoots(context)) {
+    const targetNodeModules = path.join(runtimeRoot, 'node_modules');
+    await fs.rm(targetNodeModules, { recursive: true, force: true });
+    await fs.cp(sourceNodeModules, targetNodeModules, {
+      recursive: true,
+      force: true,
+      verbatimSymlinks: true,
+    });
+  }
 }
 
 async function chmodExecutable(filePath) {
