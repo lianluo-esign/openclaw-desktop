@@ -45,7 +45,8 @@ async function chmodPlatformExecutable(context) {
     return;
   }
 
-  const executableName = context.packager.executableName;
+  const fallbackExecutableName = context.packager.appInfo.productFilename;
+  const executableName = context.packager.executableName || fallbackExecutableName;
 
   if (context.electronPlatformName === 'darwin') {
     const appBundlePath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
