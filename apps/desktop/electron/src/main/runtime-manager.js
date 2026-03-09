@@ -40,6 +40,26 @@ function isNodeScriptPath(filePath) {
   return Boolean(filePath) && /\.(mjs|cjs|js)$/i.test(filePath);
 }
 
+function isOpenClawGatewayProcess(command) {
+  return /(^|\/)openclaw-gateway(\s|$)/.test(command);
+}
+
+function isOpenClawCommandProcess(command) {
+  return /(^|\/)openclaw(\s|$)/.test(command) && !command.includes("openclaw-desktop");
+}
+
+function shouldManageExistingOpenClawProcess(command) {
+  if (!command) {
+    return false;
+  }
+
+  if (command.includes("openclaw-desktop")) {
+    return false;
+  }
+
+  return isOpenClawGatewayProcess(command) || isOpenClawCommandProcess(command);
+}
+
 async function collectCurrentUserProcesses() {
   if (process.platform === "win32") {
     return [];
@@ -371,9 +391,6 @@ class RuntimeManager extends EventEmitter {
   }
 
   async stopExistingUserGateway() {
-    if (!this.app?.isPackaged || !this.runtimeCommand) {
-      return;
-    }
 
     this.setRuntimeTask({
       phase: "stopping-existing-runtime",
@@ -405,23 +422,37 @@ class RuntimeManager extends EventEmitter {
     await sleep(1200);
 
     const processes = await collectCurrentUserProcesses();
-    const candidates = processes.filter((entry) => {
+    const managedProcesses = processes.filter((entry) => {
       if (!entry || !Number.isFinite(entry.pid) || entry.pid <= 0) {
         return false;
       }
       if (entry.pid === process.pid) {
         return false;
       }
-      const command = String(entry.command || "");
-      if (!command) {
-        return false;
-      }
-      if (command.includes("openclaw-desktop")) {
-        return false;
-      }
-      return /(^|\/)openclaw-gateway(\s|$)/.test(command)
-        || /(^|\s)openclaw(\s|$).*gateway.*run/.test(command);
+      return shouldManageExistingOpenClawProcess(String(entry.command || ""));
     });
+
+    const gatewayProcesses = managedProcesses.filter((entry) => isOpenClawGatewayProcess(String(entry.command || "")));
+    const openclawProcesses = managedProcesses.filter((entry) => isOpenClawCommandProcess(String(entry.command || "")));
+    const hasPair = gatewayProcesses.length > 0 && openclawProcesses.length > 0;
+    const candidates = managedProcesses.filter((entry) => {
+      const command = String(entry.command || "");
+      if (isOpenClawGatewayProcess(command)) {
+        return true;
+      }
+      return hasPair && isOpenClawCommandProcess(command);
+    });
+
+    if (candidates.length > 0) {
+      this.setRuntimeTask({
+        phase: "stopping-existing-runtime",
+        progress: 22,
+        version: this.health.version,
+        latestVersion: this.runtimeLatestVersion,
+        message: `检测到 ${candidates.length} 个旧的 OpenClaw 进程，正在清理…`,
+        detail: candidates.map((entry) => `[${entry.pid}] ${String(entry.command || "")}`).join("\n"),
+      });
+    }
 
     for (const entry of candidates) {
       try {
@@ -484,9 +515,7 @@ class RuntimeManager extends EventEmitter {
       return this.getState();
     }
 
-    if (this.app?.isPackaged) {
-      await this.stopExistingUserGateway();
-    }
+    await this.stopExistingUserGateway();
 
     const preferredPort = this.meta.port || DEFAULT_PORT;
     const port = await findAvailablePort(preferredPort);
