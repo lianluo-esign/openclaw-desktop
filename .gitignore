@@ -5,3 +5,7 @@ out/
 .DS_Store
 apps/desktop/electron/openclaw-runtime/
 apps/desktop/electron/.electron-user-data/
+apps/desktop/electron/runtime/*
+!apps/desktop/electron/runtime/.gitkeep
+apps/desktop/electron/runtime-bundles/*
+!apps/desktop/electron/runtime-bundles/README.md

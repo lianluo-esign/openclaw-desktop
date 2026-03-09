@@ -10,9 +10,9 @@
   },
   "license": "UNLICENSED",
   "scripts": {
-    "dev": "npm run build:ts && node scripts/dev.mjs",
-    "build": "npm run build:ts",
-    "package": "node scripts/package.mjs",
+    "dev": "npm run prepare:runtime && npm run build:ts && node scripts/dev.mjs",
+    "build": "npm run prepare:runtime && npm run build:ts",
+    "package": "npm run package:auto",
     "typecheck": "npm run build:ts -- --noEmit && node --check src/main/index.js && node --check src/main/backup/common.js && node --check src/main/backup/daemon.js && node --check src/main/backup-manager.js && node --check src/main/linux-display.js && node --check src/main/linux-launcher.js && node --check src/main/shutdown.js && node --check src/main/tray.js && node --check src/main/runtime-manager.js && node --check src/main/runtime-paths.js && node --check src/main/setup-config.js && node --check src/main/runtime-installer.js && node --check src/preload/index.js && node --check renderer/splash.js && node --check scripts/after-pack.js && node --check scripts/build-ts.mjs && node --check scripts/dev.mjs && node --check scripts/package.mjs",
     "test": "node --test test/*.test.js",
     "package:mac": "node scripts/package.mjs --mac",
@@ -20,7 +20,15 @@
     "package:mac:x64": "node scripts/package.mjs --mac --x64",
     "package:win": "node scripts/package.mjs --win",
     "package:linux": "node scripts/package.mjs --linux",
-    "build:ts": "node scripts/build-ts.mjs"
+    "build:ts": "node scripts/build-ts.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "package:auto": "node scripts/package.mjs",
+    "build:runtime-bundle": "node scripts/build-runtime-bundle.mjs",
+    "build:runtime-bundle:linux": "node scripts/build-runtime-bundle.mjs --platform=linux --arch=x64",
+    "build:runtime-bundle:mac:arm64": "node scripts/build-runtime-bundle.mjs --platform=darwin --arch=arm64",
+    "build:runtime-bundle:mac:x64": "node scripts/build-runtime-bundle.mjs --platform=darwin --arch=x64",
+    "build:runtime-bundle:win": "node scripts/build-runtime-bundle.mjs --platform=win32 --arch=x64",
+    "bootstrap:vendor-openclaw": "node scripts/bootstrap-vendor-openclaw.mjs"
   },
   "devDependencies": {
     "dmg-license": "^1.0.11",
@@ -63,7 +71,16 @@
     "afterPack": "scripts/after-pack.js",
     "electronVersion": "39.8.0",
     "icon": "assets/app-icon-512.png",
-    "artifactName": "openclaw-desktop-${env.OPENCLAW_BUILD_DATE}.${ext}"
+    "artifactName": "openclaw-desktop-${env.OPENCLAW_BUILD_DATE}.${ext}",
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "json5": "^2.2.3",

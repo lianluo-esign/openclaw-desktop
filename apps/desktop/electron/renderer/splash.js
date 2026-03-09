@@ -22,17 +22,13 @@ function formatTime(value) {
 
 function runtimeTaskLabel(phase) {
   const labels = {
-    'checking-local': '检查私有 runtime',
-    'checking-latest': '检查最新版本',
-    'downloading-runtime': '下载 runtime',
-    'extracting-runtime': '解压 runtime',
-    finalizing: '激活 runtime',
+    'checking-local': '检查内置 runtime',
+    finalizing: '准备内置 bundle',
     ready: 'runtime 已就绪',
-    'using-cached': '复用本地安装包',
     'starting-runtime': '启动 runtime',
     'stopping-runtime': '停止 runtime',
     'stopping-existing-runtime': '停止已有 runtime',
-    'updating-runtime': '更新 runtime',
+    'updating-runtime': '更新提示',
     retrying: '等待自动重试',
   };
   return labels[phase] || '准备中';

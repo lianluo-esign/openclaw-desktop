@@ -10,6 +10,10 @@ function isHyprlandSession(env = process.env) {
   );
 }
 
+function isWaylandWithX11Fallback(env = process.env) {
+  return Boolean(env.WAYLAND_DISPLAY && env.DISPLAY);
+}
+
 function hasExplicitOzoneOverride(argv = process.argv.slice(2), env = process.env) {
   return argv.some((arg) => arg.startsWith('--ozone-platform') || arg.startsWith('--ozone-platform-hint'))
     || Boolean(env.ELECTRON_OZONE_PLATFORM_HINT)
@@ -17,12 +21,31 @@ function hasExplicitOzoneOverride(argv = process.argv.slice(2), env = process.en
     || Boolean(env.OPENCLAW_DESKTOP_OZONE_PLATFORM);
 }
 
+function hasExplicitSandboxOverride(argv = process.argv.slice(2), env = process.env) {
+  return argv.some((arg) => arg === '--no-sandbox' || arg === '--enable-sandbox' || arg === '--disable-setuid-sandbox')
+    || env.OPENCLAW_DESKTOP_NO_SANDBOX === '0'
+    || env.OPENCLAW_DESKTOP_NO_SANDBOX === '1'
+    || env.ELECTRON_DISABLE_SANDBOX === '1';
+}
+
 const env = { ...process.env };
 const extraArgs = [];
 
-if (process.platform === 'linux' && isHyprlandSession(env) && !hasExplicitOzoneOverride(process.argv.slice(2), env)) {
+if (process.platform === 'linux' && (isHyprlandSession(env) || isWaylandWithX11Fallback(env)) && !hasExplicitOzoneOverride(process.argv.slice(2), env)) {
   env.ELECTRON_OZONE_PLATFORM_HINT = 'x11';
+  env.XDG_SESSION_TYPE = 'x11';
+  delete env.WAYLAND_DISPLAY;
   extraArgs.push('--ozone-platform=x11', '--ozone-platform-hint=x11');
+}
+
+if (process.platform === 'linux') {
+  env.OPENCLAW_DESKTOP_DISABLE_GPU = '1';
+  extraArgs.push('--disable-dev-shm-usage', '--disable-gpu', '--disable-gpu-compositing');
+}
+
+if (process.platform === 'linux' && !hasExplicitSandboxOverride(process.argv.slice(2), env)) {
+  env.OPENCLAW_DESKTOP_NO_SANDBOX = '1';
+  extraArgs.push('--no-sandbox', '--disable-setuid-sandbox');
 }
 
 const require = createRequire(import.meta.url);

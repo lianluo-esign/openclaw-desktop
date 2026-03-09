@@ -1,4 +1,6 @@
+const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { app, BrowserWindow, Menu, Tray, ipcMain, shell } = require('electron');
 
 const { BackupManager } = require('./backup-manager');
@@ -17,6 +19,29 @@ let tray = null;
 let quitting = false;
 let shutdownController = null;
 let restorePromise = null;
+
+const APP_USER_DATA_DIRNAME = 'openclaw-desktop';
+const LEGACY_APP_USER_DATA_DIRNAME = 'OpenClaw Desktop';
+
+function shouldDisableHardwareAcceleration(env = process.env, platform = process.platform) {
+  return platform === 'linux' && env.OPENCLAW_DESKTOP_DISABLE_GPU === '1';
+}
+
+function configureUserDataPath() {
+  const appDataDir = app.getPath('appData');
+  const userDataDir = path.join(appDataDir, APP_USER_DATA_DIRNAME);
+  const legacyUserDataDir = path.join(appDataDir, LEGACY_APP_USER_DATA_DIRNAME);
+
+  if (!fs.existsSync(userDataDir) && fs.existsSync(legacyUserDataDir)) {
+    try {
+      fs.renameSync(legacyUserDataDir, userDataDir);
+    } catch (error) {
+      console.warn('[desktop] Failed to migrate legacy userData directory:', error);
+    }
+  }
+
+  app.setPath('userData', userDataDir);
+}
 
 const RUNTIME_LABELS = {
   starting: '启动中',
@@ -40,10 +65,6 @@ const BACKUP_LABELS = {
 
 const RUNTIME_UPDATE_BUSY_PHASES = new Set([
   'checking-local',
-  'checking-latest',
-  'downloading-runtime',
-  'extracting-runtime',
-  'using-cached',
   'finalizing',
   'starting-runtime',
   'stopping-runtime',
@@ -69,6 +90,18 @@ function logNavigationError(label, error) {
 
 function getSplashPath() {
   return path.join(devAppRoot, 'renderer', 'splash.html');
+}
+
+function getSplashUrl() {
+  return pathToFileURL(getSplashPath()).toString();
+}
+
+function isSplashLoaded(targetWindow = mainWindow) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return false;
+  }
+  const currentUrl = targetWindow.webContents.getURL();
+  return currentUrl === getSplashUrl();
 }
 
 function requestOpenSetupWizard() {
@@ -331,6 +364,9 @@ async function loadSplash() {
   }
 
   const targetWindow = mainWindow;
+  if (isSplashLoaded(targetWindow)) {
+    return;
+  }
   try {
     await targetWindow.loadFile(getSplashPath());
   } catch (error) {
@@ -522,7 +558,14 @@ function registerIpc() {
 
 applyLinuxDisplayPreferences({ app });
 
+if (shouldDisableHardwareAcceleration()) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+}
+
 app.setName('OpenClaw Desktop');
+configureUserDataPath();
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

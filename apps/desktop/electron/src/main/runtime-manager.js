@@ -26,10 +26,24 @@ const { ensureManagedRuntime } = require("./runtime-installer");
 
 const DEFAULT_PORT = 18789;
 const READY_TIMEOUT_MS = 45_000;
+const READY_POLL_INTERVAL_MS = 250;
+const READY_FETCH_TIMEOUT_MS = 800;
+const READY_PROGRESS_BASE = 90;
+const READY_PROGRESS_MAX = 99;
+const READY_PROGRESS_SPAN_MS = 12_000;
 const RESTART_DELAYS_MS = [1_000, 3_000, 5_000, 10_000];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeStartupProgress(startedAt, now = Date.now()) {
+  const elapsed = Math.max(0, now - startedAt);
+  const ratio = Math.min(1, elapsed / READY_PROGRESS_SPAN_MS);
+  return Math.min(
+    READY_PROGRESS_MAX,
+    Math.max(READY_PROGRESS_BASE, Math.round(READY_PROGRESS_BASE + (READY_PROGRESS_MAX - READY_PROGRESS_BASE) * ratio)),
+  );
 }
 
 function isWindowsCommandPath(filePath) {
@@ -336,6 +350,7 @@ class RuntimeManager extends EventEmitter {
       userDataDir: this.userDataDir,
       nodeExecPath,
       forceLatest,
+      devAppRoot: this.app?.isPackaged ? null : this.devAppRoot,
       onProgress: (task) => {
         this.runtimeLatestVersion = task.latestVersion ?? this.runtimeLatestVersion;
         this.health.version = task.version || this.health.version;
@@ -355,13 +370,13 @@ class RuntimeManager extends EventEmitter {
     if (this.runtimeOverrideRoot) {
       return (
         `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
-        "Point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime, or let the desktop app resolve the user-installed openclaw runtime."
+        "Point OPENCLAW_DESKTOP_RUNTIME_DIR to a built runtime, or prepare runtime/openclaw from the matching runtime-bundles/<platform-arch>/openclaw bundle."
       );
     }
 
     return (
       `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
-      "Please keep the network available and let the desktop app download the managed OpenClaw runtime into its private data directory."
+      "Please prepare the matching bundled OpenClaw runtime under runtime/openclaw (or set OPENCLAW_DESKTOP_RUNTIME_DIR)."
     );
   }
 
@@ -408,8 +423,45 @@ class RuntimeManager extends EventEmitter {
           env: { ...process.env, FORCE_COLOR: "0" },
           stdio: ["ignore", "pipe", "pipe"],
         });
-        child.once("error", () => resolve());
-        child.once("exit", () => resolve());
+
+        let settled = false;
+        const finish = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(killTimer);
+          clearTimeout(forceKillTimer);
+          resolve();
+        };
+
+        const killTimer = setTimeout(() => {
+          this.setRuntimeTask({
+            phase: "stopping-existing-runtime",
+            progress: 20,
+            version: this.health.version,
+            latestVersion: this.runtimeLatestVersion,
+            message: "停止旧 Gateway 超时，改用进程扫描清理…",
+            detail: [invocation.command, ...invocation.args].join(" "),
+          });
+          try {
+            child.kill("SIGTERM");
+          } catch {
+            finish();
+          }
+        }, 4_000);
+
+        const forceKillTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          finish();
+        }, 6_000);
+
+        child.once("error", () => finish());
+        child.once("exit", () => finish());
       });
     } catch {
       // ignore and continue with best-effort process cleanup
@@ -495,8 +547,7 @@ class RuntimeManager extends EventEmitter {
     const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
 
     try {
-      const shouldResolveRuntime = !skipRuntimeResolve
-        && !(reason === "auto-restart" && this.runtimeRoot);
+      const shouldResolveRuntime = !skipRuntimeResolve;
       if (shouldResolveRuntime || !this.runtimeRoot) {
         await this.resolveRuntimeRoot(nodeExecPath);
       }
@@ -549,12 +600,14 @@ class RuntimeManager extends EventEmitter {
     }
     const out = fs.createWriteStream(this.logPath, { flags: "a" });
 
+    const startupStartedAt = Date.now();
     this.setRuntimeTask({
       phase: "starting-runtime",
-      progress: 96,
+      progress: READY_PROGRESS_BASE,
       version: this.health.version,
       latestVersion: this.runtimeLatestVersion,
       message: `正在启动 OpenClaw v${this.health.version}…`,
+      detail: `正在等待 Gateway HTTP 就绪（127.0.0.1:${port}）…`,
     });
 
     let runtimeCommand = nodeExecPath;
@@ -611,7 +664,7 @@ class RuntimeManager extends EventEmitter {
     });
 
     try {
-      await this.waitUntilReady();
+      await this.waitUntilReady({ startupStartedAt });
       this.health.lastHelloAt = Date.now();
       this.restartCount = 0;
       this.clearRuntimeTask();
@@ -632,23 +685,41 @@ class RuntimeManager extends EventEmitter {
     return this.getState();
   }
 
-  async waitUntilReady() {
+  async waitUntilReady({ startupStartedAt = Date.now() } = {}) {
     const deadline = Date.now() + READY_TIMEOUT_MS;
     const url = `${this.getConnectionInfo().httpBaseUrl}/`;
+    let lastProgress = Number.isFinite(Number(this.runtimeTask?.progress)) ? Number(this.runtimeTask.progress) : READY_PROGRESS_BASE;
 
     while (Date.now() < deadline) {
       if (!this.child) {
         throw new Error("runtime process exited before gateway became ready");
       }
+
+      const nextProgress = computeStartupProgress(startupStartedAt);
+      if (nextProgress > lastProgress) {
+        lastProgress = nextProgress;
+        this.setRuntimeTask({
+          phase: "starting-runtime",
+          progress: nextProgress,
+          version: this.health.version,
+          latestVersion: this.runtimeLatestVersion,
+          message: `正在启动 OpenClaw v${this.health.version}…`,
+          detail: `正在等待 Gateway HTTP 就绪（${url}）…`,
+        });
+      }
+
       try {
-        const response = await fetch(url, { method: "GET" });
+        const response = await fetch(url, {
+          method: "GET",
+          signal: AbortSignal.timeout(READY_FETCH_TIMEOUT_MS),
+        });
         if (response.ok) {
           return;
         }
       } catch {
         // keep polling
       }
-      await sleep(1_000);
+      await sleep(READY_POLL_INTERVAL_MS);
     }
 
     throw new Error("gateway HTTP endpoint not reachable");
@@ -725,74 +796,21 @@ class RuntimeManager extends EventEmitter {
   }
 
   supportsManagedRuntimeUpdates() {
-    return Boolean(this.app?.isPackaged) && !this.runtimeOverrideRoot;
+    return false;
   }
 
   async updateRuntime() {
-    if (!this.supportsManagedRuntimeUpdates()) {
-      return this.getState();
-    }
-
-    if (this.state === "starting" || this.state === "stopping") {
-      return this.getState();
-    }
-
-    if (this.updatePromise) {
-      return this.updatePromise;
-    }
-
-    const task = (async () => {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-
-      const wasRunning = this.state === "running";
-      const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
-
-      await this.stop();
-
-      this.setRuntimeTask({
-        phase: "updating-runtime",
-        progress: 12,
-        version: this.health.version,
-        latestVersion: this.runtimeLatestVersion,
-        message: "正在下载并更新 OpenClaw runtime…",
-      });
-
-      try {
-        await this.resolveRuntimeRoot(nodeExecPath, { forceLatest: true });
-      } catch (error) {
-        if (wasRunning && this.runtimeRoot) {
-          try {
-            await this.start({ reason: "update-failed-restore", skipRuntimeResolve: true });
-            return this.getState();
-          } catch {
-            // ignore restart failure and surface original update error below
-          }
-        }
-        this.setState("crashed", {
-          lastError: `Failed to update OpenClaw runtime: ${error.message}`,
-        });
-        return this.getState();
-      }
-
-      this.health.version = resolveRuntimeVersion(this.runtimeRoot) || this.health.version;
-      this.setRuntimeTask({
-        phase: "ready",
-        progress: 100,
-        version: this.health.version,
-        latestVersion: this.runtimeLatestVersion,
-        message: `OpenClaw runtime 已更新到 v${this.health.version}，正在重启…`,
-        detail: this.runtimeRoot,
-      });
-
-      return this.start({ reason: "manual-update", skipRuntimeResolve: true });
-    })();
-
-    this.updatePromise = task.finally(() => {
-      this.updatePromise = null;
+    this.setRuntimeTask({
+      phase: "updating-runtime",
+      progress: 12,
+      version: this.health.version,
+      latestVersion: this.runtimeLatestVersion,
+      message: "当前版本使用内置 runtime bundle，请更新桌面应用本体来升级 runtime。",
     });
-
-    return this.updatePromise;
+    setTimeout(() => {
+      this.clearRuntimeTask();
+    }, 1800);
+    return this.getState();
   }
 
   async openConfigDir() {

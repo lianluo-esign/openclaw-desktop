@@ -37,71 +37,59 @@ exports.readRuntimeVersion = readRuntimeVersion;
 exports.resolveManagedRuntimeDir = resolveManagedRuntimeDir;
 exports.ensureManagedRuntime = ensureManagedRuntime;
 const fsSync = __importStar(require("node:fs"));
-const node_fs_1 = require("node:fs");
 const path = __importStar(require("node:path"));
-const tar = __importStar(require("tar"));
 const PACKAGE_NAME = "openclaw";
-const REGISTRY_LATEST_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
-const MANAGED_RUNTIME_DIRNAME = "runtime";
-const MANAGED_CURRENT_DIRNAME = "current";
-const MANAGED_CACHE_DIRNAME = "cache";
+const BUNDLED_RUNTIME_DIRNAME = "runtime";
+const BUNDLED_RUNTIME_SUBDIR = "openclaw";
+const BUNDLED_RUNTIME_MANIFEST = "manifest.json";
 function emitProgress(onProgress, next) {
     if (typeof onProgress === "function") {
         onProgress({ progress: null, detail: null, version: null, latestVersion: null, ...next });
     }
 }
-function uniqPaths(candidates) {
-    return [...new Set(candidates.filter(Boolean).map((value) => path.resolve(value)))];
-}
-function readPackageJson(packageRoot) {
+function readJson(filePath) {
     try {
-        return JSON.parse(fsSync.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+        return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
     }
     catch {
         return null;
     }
 }
-function formatBytes(value) {
-    const size = Number(value);
-    if (!Number.isFinite(size) || size <= 0) {
-        return "未知大小";
-    }
-    if (size < 1024) {
-        return `${size} B`;
-    }
-    if (size < 1024 * 1024) {
-        return `${(size / 1024).toFixed(1)} KB`;
-    }
-    if (size < 1024 * 1024 * 1024) {
-        return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-    }
-    return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+function readBundleManifest(runtimeBaseDir) {
+    return readJson(path.join(runtimeBaseDir, BUNDLED_RUNTIME_MANIFEST));
+}
+function getElectronResourcesPath() {
+    const candidate = process.resourcesPath;
+    return typeof candidate === "string" && candidate.trim() ? candidate : null;
 }
 function readRuntimeVersion(runtimeRoot) {
     if (!runtimeRoot)
         return null;
     try {
-        const pkg = readPackageJson(runtimeRoot);
+        const pkg = readJson(path.join(runtimeRoot, "package.json"));
         return typeof pkg?.version === "string" && pkg.version.trim() ? pkg.version.trim() : null;
     }
     catch {
         return null;
     }
 }
-function resolveManagedRuntimeDir(userDataDir) {
-    return path.join(userDataDir, MANAGED_RUNTIME_DIRNAME, PACKAGE_NAME);
+function resolveManagedRuntimeDir(_userDataDir) {
+    const resourcesPath = getElectronResourcesPath();
+    if (resourcesPath) {
+        return path.join(resourcesPath, BUNDLED_RUNTIME_DIRNAME);
+    }
+    return path.join(process.cwd(), BUNDLED_RUNTIME_DIRNAME);
 }
-function resolveManagedCurrentRuntimeRoot(userDataDir) {
-    return path.join(resolveManagedRuntimeDir(userDataDir), MANAGED_CURRENT_DIRNAME);
+function resolveBundledRuntimeBaseDir(devAppRoot) {
+    const resourcesPath = getElectronResourcesPath();
+    if (resourcesPath && !devAppRoot) {
+        return path.join(resourcesPath, BUNDLED_RUNTIME_DIRNAME);
+    }
+    const root = devAppRoot ? path.resolve(devAppRoot) : process.cwd();
+    return path.join(root, BUNDLED_RUNTIME_DIRNAME);
 }
-function resolveManagedCacheDir(userDataDir) {
-    return path.join(resolveManagedRuntimeDir(userDataDir), MANAGED_CACHE_DIRNAME);
-}
-function resolveManagedTarballPath(userDataDir, version) {
-    return path.join(resolveManagedCacheDir(userDataDir), `${PACKAGE_NAME}-${version}.tgz`);
-}
-function resolveManagedStagingRoot(userDataDir, version) {
-    return path.join(resolveManagedRuntimeDir(userDataDir), `.staging-${version}-${process.pid}-${Date.now()}`);
+function resolveBundledRuntimeRoot(devAppRoot) {
+    return path.join(resolveBundledRuntimeBaseDir(devAppRoot), BUNDLED_RUNTIME_SUBDIR);
 }
 function runtimeCommandNames() {
     if (process.platform === "win32") {
@@ -110,7 +98,7 @@ function runtimeCommandNames() {
     return ["openclaw.mjs", "openclaw", "openclaw.js", "openclaw.cjs"];
 }
 function resolvePackageJsonBinCandidates(packageRoot) {
-    const pkg = readPackageJson(packageRoot);
+    const pkg = readJson(path.join(packageRoot, "package.json"));
     if (!pkg) {
         return [];
     }
@@ -131,15 +119,15 @@ function resolvePackageJsonBinCandidates(packageRoot) {
             appendCandidate(value);
         }
     }
-    return uniqPaths(candidates);
+    return [...new Set(candidates)];
 }
 function resolveRuntimeCommand(runtimeRoot) {
-    const candidates = uniqPaths([
+    const candidates = [
         ...resolvePackageJsonBinCandidates(runtimeRoot),
         ...runtimeCommandNames().map((name) => path.join(runtimeRoot, name)),
         ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "bin", name)),
         ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "dist", name)),
-    ]);
+    ];
     for (const candidate of candidates) {
         if (fsSync.existsSync(candidate)) {
             return candidate;
@@ -147,251 +135,44 @@ function resolveRuntimeCommand(runtimeRoot) {
     }
     return path.join(runtimeRoot, "openclaw.mjs");
 }
-function inspectManagedRuntime(userDataDir) {
-    const runtimeRoot = resolveManagedCurrentRuntimeRoot(userDataDir);
+async function ensureManagedRuntime(params) {
+    const { onProgress, devAppRoot } = params;
+    const runtimeBaseDir = resolveBundledRuntimeBaseDir(devAppRoot);
+    const runtimeRoot = resolveBundledRuntimeRoot(devAppRoot);
+    const manifest = readBundleManifest(runtimeBaseDir);
+    emitProgress(onProgress, {
+        phase: "checking-local",
+        progress: 10,
+        message: "正在检查内置 OpenClaw runtime bundle…",
+        detail: runtimeRoot,
+        latestVersion: typeof manifest?.version === "string" ? manifest.version : null,
+    });
+    if (!fsSync.existsSync(runtimeRoot)) {
+        const bundleId = manifest?.bundleId || `${process.platform}-${process.arch}`;
+        throw new Error(`bundled runtime not found at ${runtimeRoot}. Expected runtime/openclaw prepared from runtime-bundles/${bundleId}/openclaw`);
+    }
     const version = readRuntimeVersion(runtimeRoot);
     if (!version) {
-        return null;
+        throw new Error(`bundled runtime is missing package.json version: ${runtimeRoot}`);
     }
     const runtimeCommand = resolveRuntimeCommand(runtimeRoot);
     if (!fsSync.existsSync(runtimeCommand)) {
-        return null;
+        throw new Error(`bundled runtime command not found: ${runtimeCommand}`);
     }
-    return {
-        version,
-        runtimeRoot,
-        source: "managed-download",
-        runtimeCommand,
-    };
-}
-async function fetchLatestManifest(onProgress) {
-    emitProgress(onProgress, {
-        phase: "checking-latest",
-        progress: 18,
-        message: "正在检查 OpenClaw 最新发布版本…",
-        detail: REGISTRY_LATEST_URL,
-    });
-    const response = await fetch(REGISTRY_LATEST_URL, {
-        headers: {
-            accept: "application/json",
-        },
-        redirect: "follow",
-    });
-    if (!response.ok) {
-        throw new Error(`failed to fetch npm metadata (${response.status} ${response.statusText})`);
-    }
-    const payload = await response.json();
-    const version = typeof payload?.version === "string" ? payload.version.trim() : "";
-    const tarball = typeof payload?.dist?.tarball === "string" ? payload.dist.tarball.trim() : "";
-    if (!version || !tarball) {
-        throw new Error("npm metadata missing version or tarball URL");
-    }
-    return {
-        version,
-        dist: {
-            tarball,
-        },
-    };
-}
-async function downloadTarball(params) {
-    const { userDataDir, manifest, onProgress } = params;
-    const cacheDir = resolveManagedCacheDir(userDataDir);
-    const tarballPath = resolveManagedTarballPath(userDataDir, manifest.version);
-    const tempPath = `${tarballPath}.download`;
-    await node_fs_1.promises.mkdir(cacheDir, { recursive: true });
-    try {
-        const stats = await node_fs_1.promises.stat(tarballPath);
-        if (stats.size > 0) {
-            emitProgress(onProgress, {
-                phase: "using-cached",
-                progress: 30,
-                version: manifest.version,
-                latestVersion: manifest.version,
-                message: `复用已下载的 OpenClaw v${manifest.version} 安装包…`,
-                detail: tarballPath,
-            });
-            return tarballPath;
-        }
-    }
-    catch {
-        // ignore
-    }
-    emitProgress(onProgress, {
-        phase: "downloading-runtime",
-        progress: 26,
-        version: manifest.version,
-        latestVersion: manifest.version,
-        message: `正在下载 OpenClaw v${manifest.version}…`,
-        detail: manifest.dist.tarball,
-    });
-    const response = await fetch(manifest.dist.tarball, {
-        redirect: "follow",
-    });
-    if (!response.ok) {
-        throw new Error(`failed to download runtime tarball (${response.status} ${response.statusText})`);
-    }
-    const totalBytes = Number.parseInt(response.headers.get("content-length") || "", 10);
-    const body = response.body;
-    if (!body) {
-        throw new Error("runtime download response body is empty");
-    }
-    await node_fs_1.promises.rm(tempPath, { force: true });
-    const writer = fsSync.createWriteStream(tempPath, { flags: "w" });
-    const reader = body.getReader();
-    let writtenBytes = 0;
-    try {
-        while (true) {
-            const chunk = await reader.read();
-            if (chunk.done) {
-                break;
-            }
-            const buffer = Buffer.from(chunk.value);
-            writtenBytes += buffer.length;
-            await new Promise((resolve, reject) => {
-                writer.write(buffer, (error) => {
-                    if (error) {
-                        reject(error);
-                        return;
-                    }
-                    resolve();
-                });
-            });
-            const progress = Number.isFinite(totalBytes) && totalBytes > 0
-                ? 26 + Math.min(40, Math.round((writtenBytes / totalBytes) * 40))
-                : null;
-            emitProgress(onProgress, {
-                phase: "downloading-runtime",
-                progress,
-                version: manifest.version,
-                latestVersion: manifest.version,
-                message: `正在下载 OpenClaw v${manifest.version}…`,
-                detail: `${formatBytes(writtenBytes)} / ${formatBytes(Number.isFinite(totalBytes) ? totalBytes : null)}`,
-            });
-        }
-        await new Promise((resolve, reject) => {
-            writer.end((error) => {
-                if (error) {
-                    reject(error);
-                    return;
-                }
-                resolve();
-            });
-        });
-        await node_fs_1.promises.rename(tempPath, tarballPath);
-        return tarballPath;
-    }
-    catch (error) {
-        try {
-            writer.destroy();
-        }
-        catch {
-            // ignore
-        }
-        await node_fs_1.promises.rm(tempPath, { force: true });
-        throw error;
-    }
-}
-async function extractTarball(params) {
-    const { userDataDir, manifest, tarballPath, onProgress } = params;
-    const stagingRoot = resolveManagedStagingRoot(userDataDir, manifest.version);
-    emitProgress(onProgress, {
-        phase: "extracting-runtime",
-        progress: 70,
-        version: manifest.version,
-        latestVersion: manifest.version,
-        message: `正在解压 OpenClaw v${manifest.version}…`,
-        detail: tarballPath,
-    });
-    await node_fs_1.promises.rm(stagingRoot, { recursive: true, force: true });
-    await node_fs_1.promises.mkdir(stagingRoot, { recursive: true });
-    try {
-        await tar.x({
-            cwd: stagingRoot,
-            file: tarballPath,
-            strip: 1,
-        });
-    }
-    catch (error) {
-        await node_fs_1.promises.rm(stagingRoot, { recursive: true, force: true });
-        throw error;
-    }
-    const version = readRuntimeVersion(stagingRoot);
-    if (!version) {
-        await node_fs_1.promises.rm(stagingRoot, { recursive: true, force: true });
-        throw new Error("downloaded runtime is missing package.json version");
-    }
-    const runtimeCommand = resolveRuntimeCommand(stagingRoot);
-    if (!fsSync.existsSync(runtimeCommand)) {
-        await node_fs_1.promises.rm(stagingRoot, { recursive: true, force: true });
-        throw new Error(`downloaded runtime entry not found: ${runtimeCommand}`);
-    }
-    return stagingRoot;
-}
-async function activateStagedRuntime(params) {
-    const { userDataDir, manifest, stagingRoot, onProgress } = params;
-    const runtimeBaseDir = resolveManagedRuntimeDir(userDataDir);
-    const currentRoot = resolveManagedCurrentRuntimeRoot(userDataDir);
-    emitProgress(onProgress, {
-        phase: "finalizing",
-        progress: 88,
-        version: manifest.version,
-        latestVersion: manifest.version,
-        message: `正在激活 OpenClaw v${manifest.version}…`,
-        detail: currentRoot,
-    });
-    await node_fs_1.promises.mkdir(runtimeBaseDir, { recursive: true });
-    await node_fs_1.promises.rm(currentRoot, { recursive: true, force: true });
-    await node_fs_1.promises.rename(stagingRoot, currentRoot);
-    const resolved = inspectManagedRuntime(userDataDir);
-    if (!resolved) {
-        throw new Error("managed runtime activation succeeded but runtime entry is still missing");
-    }
-    return resolved;
-}
-async function ensureManagedRuntime(params) {
-    const { userDataDir, forceLatest = false, onProgress } = params;
-    const runtimeBaseDir = resolveManagedRuntimeDir(userDataDir);
-    emitProgress(onProgress, {
-        phase: "checking-local",
-        progress: 8,
-        message: "正在检查应用私有 OpenClaw runtime…",
-        detail: runtimeBaseDir,
-    });
-    await node_fs_1.promises.mkdir(runtimeBaseDir, { recursive: true });
-    const installed = inspectManagedRuntime(userDataDir);
-    if (installed && !forceLatest) {
-        emitProgress(onProgress, {
-            phase: "ready",
-            progress: 100,
-            version: installed.version,
-            latestVersion: installed.version,
-            message: `已找到本地 OpenClaw v${installed.version}。`,
-            detail: installed.runtimeRoot,
-        });
-        return { ...installed, baseDir: runtimeBaseDir, latestVersion: installed.version };
-    }
-    const manifest = await fetchLatestManifest(onProgress);
-    if (installed && installed.version === manifest.version) {
-        emitProgress(onProgress, {
-            phase: "ready",
-            progress: 100,
-            version: installed.version,
-            latestVersion: manifest.version,
-            message: `OpenClaw v${installed.version} 已是最新版本。`,
-            detail: installed.runtimeRoot,
-        });
-        return { ...installed, baseDir: runtimeBaseDir, latestVersion: manifest.version };
-    }
-    const tarballPath = await downloadTarball({ userDataDir, manifest, onProgress });
-    const stagingRoot = await extractTarball({ userDataDir, manifest, tarballPath, onProgress });
-    const resolved = await activateStagedRuntime({ userDataDir, manifest, stagingRoot, onProgress });
     emitProgress(onProgress, {
         phase: "ready",
         progress: 100,
-        version: resolved.version,
-        latestVersion: manifest.version,
-        message: `已准备 OpenClaw v${resolved.version}。`,
-        detail: resolved.runtimeRoot,
+        version,
+        latestVersion: version,
+        message: `已找到内置 OpenClaw v${version}。`,
+        detail: runtimeRoot,
     });
-    return { ...resolved, baseDir: runtimeBaseDir, latestVersion: manifest.version };
+    return {
+        version,
+        runtimeRoot,
+        source: "bundled-runtime",
+        runtimeCommand,
+        baseDir: runtimeBaseDir,
+        latestVersion: version,
+    };
 }

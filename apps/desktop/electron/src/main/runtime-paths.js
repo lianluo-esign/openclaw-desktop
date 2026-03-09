@@ -21,12 +21,25 @@ function resolveRuntimeOverrideRoot() {
   return envOverride ? path.resolve(envOverride) : null;
 }
 
-function resolveDevRuntimeRoot() {
-  return resolveRuntimeOverrideRoot();
+function resolveDevRuntimeRoot(devAppRoot) {
+  if (resolveRuntimeOverrideRoot()) {
+    return resolveRuntimeOverrideRoot();
+  }
+  const root = devAppRoot ? path.resolve(devAppRoot) : process.cwd();
+  return path.join(root, "runtime", "openclaw");
 }
 
-function resolveRuntimeRoot() {
-  return resolveRuntimeOverrideRoot();
+function resolveRuntimeRoot(context = {}) {
+  const override = resolveRuntimeOverrideRoot();
+  if (override) {
+    return override;
+  }
+
+  if (context.app && context.app.isPackaged && process.resourcesPath) {
+    return path.join(process.resourcesPath, "runtime", "openclaw");
+  }
+
+  return resolveDevRuntimeRoot(context.devAppRoot);
 }
 
 function resolveRuntimeLauncher(runtimeRoot) {
@@ -57,27 +70,13 @@ function resolveRuntimeVersion(runtimeRoot) {
   }
 }
 
-function resolveRuntimeNodeModulesDir(runtimeRoot) {
-  const direct = path.join(runtimeRoot, "node_modules");
-  if (fs.existsSync(direct)) {
-    return direct;
-  }
-
-  const parent = path.dirname(runtimeRoot);
-  if (path.basename(parent) === "node_modules" && fs.existsSync(parent)) {
-    return parent;
-  }
-
-  return direct;
-}
-
 function resolveRuntimeBuildProblems(runtimeRoot) {
   const problems = [];
-  const nodeModulesDir = resolveRuntimeNodeModulesDir(runtimeRoot);
   const entry = resolveRuntimeEntry(runtimeRoot);
   if (!fs.existsSync(entry)) {
     problems.push(`missing runtime entry: ${entry}`);
   }
+  const nodeModulesDir = path.join(runtimeRoot, "node_modules");
   if (!fs.existsSync(nodeModulesDir)) {
     problems.push("missing OpenClaw runtime dependencies (node_modules)");
   }

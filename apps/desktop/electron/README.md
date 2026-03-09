@@ -12,9 +12,9 @@
 - 原生菜单 `运行时 -> 打开配置向导` 可随时重新打开 UI 内向导
 - 向导现在包含欢迎页、字段校验、完成后进入聊天，以及“填充测试消息”快捷动作
 - 桌面菜单与页面浮层支持启动、停止、重启、打开日志/配置目录、导出诊断信息
-- 已打包应用以纯壳模式运行，并在应用私有目录中托管官方 `openclaw` runtime
-- 首次启动时会联网从 npm registry 下载最新 `openclaw` 安装包，解压到桌面应用私有数据目录
-- 启动与更新都复用 Electron 自带的 Node 能力，不依赖系统单独安装 `node` 或 `npm`
+- 已打包应用以纯壳模式运行，并直接携带对应平台/架构的专用 `openclaw` runtime bundle
+- runtime 由仓库内 `runtime-bundles/<platform-arch>/openclaw/` 维护，推荐从 `vendor/openclaw/` 在目标平台本机构建生成
+- 启动时直接复用 Electron 自带的 Node 能力执行内置 `openclaw.mjs`，不依赖系统单独安装 `node` 或 `npm`
 
 ## 开发
 
@@ -23,15 +23,33 @@ npm install
 npm run dev
 ```
 
-开发态与打包态现在都会优先使用桌面应用私有 runtime；也可通过 `OPENCLAW_DESKTOP_RUNTIME_DIR` 显式覆盖 runtime 根目录。
+开发态与打包态现在都会优先使用仓库内准备好的 `runtime/openclaw/`；也可通过 `OPENCLAW_DESKTOP_RUNTIME_DIR` 显式覆盖 runtime 根目录。
 
 ## 打包前准备
+
+默认情况下，`npm run package` 会先自动检查并初始化 `vendor/openclaw`，再在目标平台本机构建 vendored OpenClaw runtime：
+
+```bash
+npm run bootstrap:vendor-openclaw
+npm run build:runtime-bundle
+```
+
+也可以显式指定：
+
+```bash
+npm run build:runtime-bundle:linux
+npm run build:runtime-bundle:mac:arm64
+npm run build:runtime-bundle:mac:x64
+npm run build:runtime-bundle:win
+```
+
+然后执行打包：
 
 ```bash
 npm run package
 ```
 
-打包后的桌面应用以纯壳模式运行：首次启动或手动更新时，会联网从 npm registry 下载最新的 `openclaw` tarball，解压到应用私有目录，然后直接用 Electron 自带的 Node 启动 `openclaw` 入口。整个过程不依赖系统 `node` / `npm`，启动页会显示检查、下载、解压、激活、停止已有 Gateway、更新与启动阶段的进度。
+打包后的桌面应用以纯壳模式运行：推荐先把官方 `openclaw` 源码以 submodule 或 subtree 放到 `vendor/openclaw/`，再由 `scripts/build-runtime-bundle.mjs` 在目标平台本机构建出 `runtime-bundles/<platform-arch>/openclaw/`。打包前会把目标 bundle 复制到 `runtime/openclaw/`，并将这套 runtime 一起打进安装包。启动时直接用 Electron 自带的 Node 执行内置 `openclaw` 入口。runtime 与桌面应用一起发布，不再做壳内在线下载更新。
 
 `npm run package` 会根据当前宿主平台输出对应安装包：
 
