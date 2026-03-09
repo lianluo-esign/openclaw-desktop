@@ -1,11 +1,16 @@
 import * as fsSync from "node:fs";
+import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import * as tar from "tar";
 
 const PACKAGE_NAME = "openclaw";
+const REGISTRY_LATEST_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
+const MANAGED_RUNTIME_DIRNAME = "runtime";
+const MANAGED_CURRENT_DIRNAME = "current";
+const MANAGED_CACHE_DIRNAME = "cache";
 
-type RuntimeSource = "path" | "home-local";
+type RuntimeSource = "managed-download";
 
 type RuntimeInfo = {
   version: string;
@@ -19,6 +24,13 @@ type ManagedRuntimeResult = RuntimeInfo & {
   latestVersion: string | null;
 };
 
+type LatestManifest = {
+  version: string;
+  dist: {
+    tarball: string;
+  };
+};
+
 export type RuntimeInstallProgress = {
   phase: string;
   progress: number | null;
@@ -29,13 +41,6 @@ export type RuntimeInstallProgress = {
 };
 
 type ProgressHandler = (update: RuntimeInstallProgress) => void;
-
-type NpmCliInvocation = {
-  command: string;
-  argsPrefix: string[];
-  env: Record<string, string>;
-  useLoginShell?: boolean;
-};
 
 function emitProgress(onProgress: ProgressHandler | undefined, next: RuntimeInstallProgress): void {
   if (typeof onProgress === "function") {
@@ -55,6 +60,23 @@ function readPackageJson(packageRoot: string): Record<string, unknown> | null {
   }
 }
 
+function formatBytes(value: number | null | undefined): string {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "未知大小";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  if (size < 1024 * 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 export function readRuntimeVersion(runtimeRoot: string | null | undefined): string | null {
   if (!runtimeRoot) return null;
   try {
@@ -65,26 +87,31 @@ export function readRuntimeVersion(runtimeRoot: string | null | undefined): stri
   }
 }
 
-export function resolveManagedRuntimeDir(_userDataDir: string): string {
-  return os.homedir();
+export function resolveManagedRuntimeDir(userDataDir: string): string {
+  return path.join(userDataDir, MANAGED_RUNTIME_DIRNAME, PACKAGE_NAME);
 }
 
-function homeDir(): string {
-  return os.homedir();
+function resolveManagedCurrentRuntimeRoot(userDataDir: string): string {
+  return path.join(resolveManagedRuntimeDir(userDataDir), MANAGED_CURRENT_DIRNAME);
 }
 
-function homeInstallRoot(): string {
-  return path.join(homeDir(), "node_modules", PACKAGE_NAME);
+function resolveManagedCacheDir(userDataDir: string): string {
+  return path.join(resolveManagedRuntimeDir(userDataDir), MANAGED_CACHE_DIRNAME);
+}
+
+function resolveManagedTarballPath(userDataDir: string, version: string): string {
+  return path.join(resolveManagedCacheDir(userDataDir), `${PACKAGE_NAME}-${version}.tgz`);
+}
+
+function resolveManagedStagingRoot(userDataDir: string, version: string): string {
+  return path.join(resolveManagedRuntimeDir(userDataDir), `.staging-${version}-${process.pid}-${Date.now()}`);
 }
 
 function runtimeCommandNames(): string[] {
   if (process.platform === "win32") {
     return ["openclaw.cmd", "openclaw.exe", "openclaw.bat", "openclaw.mjs", "openclaw.js", "openclaw"];
   }
-  if (process.platform === "darwin") {
-    return ["openclaw.mjs", "openclaw", "openclaw.js", "openclaw.cjs"];
-  }
-  return ["openclaw", "openclaw.mjs", "openclaw.js", "openclaw.cjs"];
+  return ["openclaw.mjs", "openclaw", "openclaw.js", "openclaw.cjs"];
 }
 
 function resolvePackageJsonBinCandidates(packageRoot: string): string[] {
@@ -114,332 +141,326 @@ function resolvePackageJsonBinCandidates(packageRoot: string): string[] {
   return uniqPaths(candidates);
 }
 
-function resolveHomePackageCommandCandidates(): string[] {
-  const runtimeRoot = homeInstallRoot();
-  return uniqPaths([
+function resolveRuntimeCommand(runtimeRoot: string): string {
+  const candidates = uniqPaths([
     ...resolvePackageJsonBinCandidates(runtimeRoot),
     ...runtimeCommandNames().map((name) => path.join(runtimeRoot, name)),
     ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "bin", name)),
     ...runtimeCommandNames().map((name) => path.join(runtimeRoot, "dist", name)),
   ]);
-}
 
-function homeCommandCandidates(): string[] {
-  const binDir = path.join(homeDir(), "node_modules", ".bin");
-  const binCandidates = process.platform === "win32"
-    ? [
-      path.join(binDir, "openclaw.cmd"),
-      path.join(binDir, "openclaw.exe"),
-      path.join(binDir, "openclaw.bat"),
-    ]
-    : [path.join(binDir, "openclaw")];
-
-  const packageCandidates = resolveHomePackageCommandCandidates();
-  if (process.platform === "darwin") {
-    return uniqPaths([...packageCandidates, ...binCandidates]);
-  }
-  return uniqPaths([...binCandidates, ...packageCandidates]);
-}
-
-function pathCommandNames(): string[] {
-  if (process.platform === "win32") {
-    return ["openclaw.cmd", "openclaw.exe", "openclaw.bat", "openclaw"];
-  }
-  return ["openclaw"];
-}
-
-function splitPathEnv(value: string | undefined): string[] {
-  return String(value || "")
-    .split(path.delimiter)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function quotePosixShellArg(value: string): string {
-  return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
-}
-
-function resolveUserShell(): string {
-  const envShell = String(process.env.SHELL || "").trim();
-  if (envShell && fsSync.existsSync(envShell)) {
-    return envShell;
-  }
-
-  if (process.platform === "darwin" && fsSync.existsSync("/bin/zsh")) {
-    return "/bin/zsh";
-  }
-
-  if (fsSync.existsSync("/bin/bash")) {
-    return "/bin/bash";
-  }
-
-  return "/bin/sh";
-}
-
-function resolveNpmBinaryCandidates(): string[] {
-  const home = homeDir();
-  const pathCandidates = splitPathEnv(process.env.PATH).map((dir) => path.join(dir, process.platform === "win32" ? "npm.cmd" : "npm"));
-  const commonCandidates = process.platform === "win32"
-    ? []
-    : [
-      "/opt/homebrew/bin/npm",
-      "/usr/local/bin/npm",
-      "/opt/local/bin/npm",
-      path.join(home, ".volta", "bin", "npm"),
-      path.join(home, ".fnm", "current", "bin", "npm"),
-      path.join(home, ".asdf", "shims", "npm"),
-      path.join(home, "node_modules", ".bin", "npm"),
-    ];
-
-  return uniqPaths([...pathCandidates, ...commonCandidates]);
-}
-
-function findNpmBinaryOnDisk(): string | null {
-  for (const candidate of resolveNpmBinaryCandidates()) {
+  for (const candidate of candidates) {
     if (fsSync.existsSync(candidate)) {
       return candidate;
     }
   }
-  return null;
+
+  return path.join(runtimeRoot, "openclaw.mjs");
 }
 
-function findCommandOnPath(): string | null {
-  const dirs = splitPathEnv(process.env.PATH);
-  for (const dir of dirs) {
-    for (const name of pathCommandNames()) {
-      const candidate = path.join(dir, name);
-      if (fsSync.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
-function resolvePackageRootFromCommand(commandPath: string): string | null {
-  try {
-    const realCommand = fsSync.realpathSync(commandPath);
-    const stats = fsSync.statSync(realCommand);
-    let current = stats.isDirectory() ? realCommand : path.dirname(realCommand);
-    const candidates: string[] = [current];
-
-    while (true) {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        break;
-      }
-      candidates.push(parent);
-      current = parent;
-    }
-
-    candidates.push(homeInstallRoot());
-
-    for (const candidate of uniqPaths(candidates)) {
-      const pkg = readPackageJson(candidate);
-      if (pkg?.name === PACKAGE_NAME) {
-        return candidate;
-      }
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function inspectRuntimeFromCommand(commandPath: string, source: RuntimeSource): RuntimeInfo | null {
-  const runtimeRoot = resolvePackageRootFromCommand(commandPath);
-  if (!runtimeRoot) {
-    return null;
-  }
+function inspectManagedRuntime(userDataDir: string): RuntimeInfo | null {
+  const runtimeRoot = resolveManagedCurrentRuntimeRoot(userDataDir);
   const version = readRuntimeVersion(runtimeRoot);
   if (!version) {
     return null;
   }
+
+  const runtimeCommand = resolveRuntimeCommand(runtimeRoot);
+  if (!fsSync.existsSync(runtimeCommand)) {
+    return null;
+  }
+
   return {
     version,
     runtimeRoot,
-    source,
-    runtimeCommand: commandPath,
+    source: "managed-download",
+    runtimeCommand,
   };
 }
 
-function resolveNpmCliInvocation(nodeExecPath: string): NpmCliInvocation {
+async function fetchLatestManifest(onProgress?: ProgressHandler): Promise<LatestManifest> {
+  emitProgress(onProgress, {
+    phase: "checking-latest",
+    progress: 18,
+    message: "正在检查 OpenClaw 最新发布版本…",
+    detail: REGISTRY_LATEST_URL,
+  });
+
+  const response = await fetch(REGISTRY_LATEST_URL, {
+    headers: {
+      accept: "application/json",
+    },
+    redirect: "follow",
+  });
+
+  if (!response.ok) {
+    throw new Error(`failed to fetch npm metadata (${response.status} ${response.statusText})`);
+  }
+
+  const payload = await response.json() as Partial<LatestManifest>;
+  const version = typeof payload?.version === "string" ? payload.version.trim() : "";
+  const tarball = typeof payload?.dist?.tarball === "string" ? payload.dist.tarball.trim() : "";
+
+  if (!version || !tarball) {
+    throw new Error("npm metadata missing version or tarball URL");
+  }
+
+  return {
+    version,
+    dist: {
+      tarball,
+    },
+  };
+}
+
+async function downloadTarball(params: {
+  userDataDir: string;
+  manifest: LatestManifest;
+  onProgress?: ProgressHandler;
+}): Promise<string> {
+  const { userDataDir, manifest, onProgress } = params;
+  const cacheDir = resolveManagedCacheDir(userDataDir);
+  const tarballPath = resolveManagedTarballPath(userDataDir, manifest.version);
+  const tempPath = `${tarballPath}.download`;
+
+  await fs.mkdir(cacheDir, { recursive: true });
+
   try {
-    const npmCliPath = require.resolve("npm/bin/npm-cli.js");
-    return { command: nodeExecPath, argsPrefix: [npmCliPath], env: { ELECTRON_RUN_AS_NODE: "1" } };
-  } catch {
-    const npmBinary = findNpmBinaryOnDisk();
-    if (npmBinary) {
-      return { command: npmBinary, argsPrefix: [], env: {} };
+    const stats = await fs.stat(tarballPath);
+    if (stats.size > 0) {
+      emitProgress(onProgress, {
+        phase: "using-cached",
+        progress: 30,
+        version: manifest.version,
+        latestVersion: manifest.version,
+        message: `复用已下载的 OpenClaw v${manifest.version} 安装包…`,
+        detail: tarballPath,
+      });
+      return tarballPath;
     }
-
-    return {
-      command: resolveUserShell(),
-      argsPrefix: ["-lc"],
-      env: {},
-      useLoginShell: true,
-    };
+  } catch {
+    // ignore
   }
-}
-
-function describeNpmInvocation(invocation: NpmCliInvocation, cwd: string, npmArgs: string[]): string {
-  if (invocation.useLoginShell) {
-    const shellCommand = `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`;
-    return `shell login fallback: ${invocation.command} ${invocation.argsPrefix.join(" ")} ${shellCommand}`;
-  }
-
-  const rendered = [invocation.command, ...invocation.argsPrefix, ...npmArgs].join(" ").trim();
-  return `direct npm invocation: ${rendered}`;
-}
-
-async function runInstallCommand(params: { nodeExecPath: string; onProgress?: ProgressHandler }): Promise<void> {
-  const { nodeExecPath, onProgress } = params;
-  const invocation = resolveNpmCliInvocation(nodeExecPath);
-  const cwd = homeDir();
-  const npmArgs = [
-    "install",
-    `${PACKAGE_NAME}@latest`,
-    "--no-fund",
-    "--no-audit",
-    "--loglevel",
-    "info",
-  ];
-  const args = invocation.useLoginShell
-    ? [
-      ...invocation.argsPrefix,
-      `cd ${quotePosixShellArg(cwd)} && npm ${npmArgs.map((value) => quotePosixShellArg(value)).join(" ")}`,
-    ]
-    : [...invocation.argsPrefix, ...npmArgs];
 
   emitProgress(onProgress, {
-    phase: "installing",
-    progress: 24,
-    message: `正在用户目录 ${cwd} 安装 OpenClaw 最新版…`,
-    detail: describeNpmInvocation(invocation, cwd, npmArgs),
+    phase: "downloading-runtime",
+    progress: 26,
+    version: manifest.version,
+    latestVersion: manifest.version,
+    message: `正在下载 OpenClaw v${manifest.version}…`,
+    detail: manifest.dist.tarball,
   });
 
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(invocation.command, args, {
-      cwd,
-      env: {
-        ...process.env,
-        ...invocation.env,
-        npm_config_update_notifier: "false",
-        npm_config_fund: "false",
-        npm_config_audit: "false",
-        npm_config_progress: "false",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32" && invocation.command === "npm",
-    });
+  const response = await fetch(manifest.dist.tarball, {
+    redirect: "follow",
+  });
 
-    let progress = 28;
-    const recentLines: string[] = [];
-    const pushLine = (value: unknown) => {
-      const text = String(value || "").trim();
-      if (!text) return;
-      recentLines.push(text);
-      while (recentLines.length > 20) recentLines.shift();
-      emitProgress(onProgress, {
-        phase: "installing",
-        progress,
-        detail: text,
-        message: "正在安装 OpenClaw…",
-      });
-    };
+  if (!response.ok) {
+    throw new Error(`failed to download runtime tarball (${response.status} ${response.statusText})`);
+  }
 
-    const tick = setInterval(() => {
-      progress = Math.min(progress + 2, 88);
-      emitProgress(onProgress, {
-        phase: "installing",
-        progress,
-        message: "正在安装 OpenClaw…",
-      });
-    }, 800);
+  const totalBytes = Number.parseInt(response.headers.get("content-length") || "", 10);
+  const body = response.body;
+  if (!body) {
+    throw new Error("runtime download response body is empty");
+  }
 
-    child.stdout.on("data", (chunk) => pushLine(chunk));
-    child.stderr.on("data", (chunk) => pushLine(chunk));
-    child.once("error", (error) => {
-      clearInterval(tick);
-      reject(error);
-    });
-    child.once("exit", (code) => {
-      clearInterval(tick);
-      if (code === 0) {
-        resolve();
-        return;
+  await fs.rm(tempPath, { force: true });
+
+  const writer = fsSync.createWriteStream(tempPath, { flags: "w" });
+  const reader = body.getReader();
+  let writtenBytes = 0;
+
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        break;
       }
-      const extra = recentLines.length > 0 ? `\n${recentLines.join("\n")}` : "";
-      reject(new Error(`npm install failed with code ${code}${extra}`));
+      const buffer = Buffer.from(chunk.value);
+      writtenBytes += buffer.length;
+
+      await new Promise<void>((resolve, reject) => {
+        writer.write(buffer, (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+
+      const progress = Number.isFinite(totalBytes) && totalBytes > 0
+        ? 26 + Math.min(40, Math.round((writtenBytes / totalBytes) * 40))
+        : null;
+      emitProgress(onProgress, {
+        phase: "downloading-runtime",
+        progress,
+        version: manifest.version,
+        latestVersion: manifest.version,
+        message: `正在下载 OpenClaw v${manifest.version}…`,
+        detail: `${formatBytes(writtenBytes)} / ${formatBytes(Number.isFinite(totalBytes) ? totalBytes : null)}`,
+      });
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      writer.end((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
     });
+
+    await fs.rename(tempPath, tarballPath);
+    return tarballPath;
+  } catch (error) {
+    try {
+      writer.destroy();
+    } catch {
+      // ignore
+    }
+    await fs.rm(tempPath, { force: true });
+    throw error;
+  }
+}
+
+async function extractTarball(params: {
+  userDataDir: string;
+  manifest: LatestManifest;
+  tarballPath: string;
+  onProgress?: ProgressHandler;
+}): Promise<string> {
+  const { userDataDir, manifest, tarballPath, onProgress } = params;
+  const stagingRoot = resolveManagedStagingRoot(userDataDir, manifest.version);
+
+  emitProgress(onProgress, {
+    phase: "extracting-runtime",
+    progress: 70,
+    version: manifest.version,
+    latestVersion: manifest.version,
+    message: `正在解压 OpenClaw v${manifest.version}…`,
+    detail: tarballPath,
   });
-}
 
-function resolveHomeInstalledRuntime(): RuntimeInfo | null {
-  for (const candidate of homeCommandCandidates()) {
-    if (!fsSync.existsSync(candidate)) {
-      continue;
-    }
-    const inspected = inspectRuntimeFromCommand(candidate, "home-local");
-    if (inspected) {
-      return inspected;
-    }
-  }
-  return null;
-}
+  await fs.rm(stagingRoot, { recursive: true, force: true });
+  await fs.mkdir(stagingRoot, { recursive: true });
 
-async function resolveExistingRuntime(): Promise<RuntimeInfo | null> {
-  if (process.platform === "darwin") {
-    return resolveHomeInstalledRuntime();
+  try {
+    await tar.x({
+      cwd: stagingRoot,
+      file: tarballPath,
+      strip: 1,
+    });
+  } catch (error) {
+    await fs.rm(stagingRoot, { recursive: true, force: true });
+    throw error;
   }
 
-  const pathCommand = findCommandOnPath();
-  if (pathCommand) {
-    const inspected = inspectRuntimeFromCommand(pathCommand, "path");
-    if (inspected) {
-      return inspected;
-    }
+  const version = readRuntimeVersion(stagingRoot);
+  if (!version) {
+    await fs.rm(stagingRoot, { recursive: true, force: true });
+    throw new Error("downloaded runtime is missing package.json version");
   }
 
-  return resolveHomeInstalledRuntime();
+  const runtimeCommand = resolveRuntimeCommand(stagingRoot);
+  if (!fsSync.existsSync(runtimeCommand)) {
+    await fs.rm(stagingRoot, { recursive: true, force: true });
+    throw new Error(`downloaded runtime entry not found: ${runtimeCommand}`);
+  }
+
+  return stagingRoot;
 }
 
-export async function ensureManagedRuntime(params: { userDataDir: string; nodeExecPath: string; onProgress?: ProgressHandler }): Promise<ManagedRuntimeResult> {
-  const { userDataDir, nodeExecPath, onProgress } = params;
+async function activateStagedRuntime(params: {
+  userDataDir: string;
+  manifest: LatestManifest;
+  stagingRoot: string;
+  onProgress?: ProgressHandler;
+}): Promise<RuntimeInfo> {
+  const { userDataDir, manifest, stagingRoot, onProgress } = params;
+  const runtimeBaseDir = resolveManagedRuntimeDir(userDataDir);
+  const currentRoot = resolveManagedCurrentRuntimeRoot(userDataDir);
+
+  emitProgress(onProgress, {
+    phase: "finalizing",
+    progress: 88,
+    version: manifest.version,
+    latestVersion: manifest.version,
+    message: `正在激活 OpenClaw v${manifest.version}…`,
+    detail: currentRoot,
+  });
+
+  await fs.mkdir(runtimeBaseDir, { recursive: true });
+  await fs.rm(currentRoot, { recursive: true, force: true });
+  await fs.rename(stagingRoot, currentRoot);
+
+  const resolved = inspectManagedRuntime(userDataDir);
+  if (!resolved) {
+    throw new Error("managed runtime activation succeeded but runtime entry is still missing");
+  }
+
+  return resolved;
+}
+
+export async function ensureManagedRuntime(params: {
+  userDataDir: string;
+  nodeExecPath: string;
+  forceLatest?: boolean;
+  onProgress?: ProgressHandler;
+}): Promise<ManagedRuntimeResult> {
+  const { userDataDir, forceLatest = false, onProgress } = params;
+  const runtimeBaseDir = resolveManagedRuntimeDir(userDataDir);
+
   emitProgress(onProgress, {
     phase: "checking-local",
     progress: 8,
-    message: process.platform === "darwin"
-      ? "正在用户 HOME 目录搜索 OpenClaw runtime…"
-      : "正在搜索当前用户可用的 OpenClaw 命令…",
+    message: "正在检查应用私有 OpenClaw runtime…",
+    detail: runtimeBaseDir,
   });
 
-  const installed = await resolveExistingRuntime();
-  if (installed) {
+  await fs.mkdir(runtimeBaseDir, { recursive: true });
+
+  const installed = inspectManagedRuntime(userDataDir);
+  if (installed && !forceLatest) {
     emitProgress(onProgress, {
       phase: "ready",
       progress: 100,
       version: installed.version,
-      message: `已找到 OpenClaw v${installed.version}。`,
+      latestVersion: installed.version,
+      message: `已找到本地 OpenClaw v${installed.version}。`,
       detail: installed.runtimeRoot,
     });
-    return { ...installed, baseDir: userDataDir, latestVersion: null };
+    return { ...installed, baseDir: runtimeBaseDir, latestVersion: installed.version };
   }
 
-  await runInstallCommand({ nodeExecPath, onProgress });
+  const manifest = await fetchLatestManifest(onProgress);
 
-  const resolved = await resolveExistingRuntime();
-  if (!resolved) {
-    throw new Error(`OpenClaw installed, but no runnable command was found. Expected one of: ${homeCommandCandidates().join(", ")}`);
+  if (installed && installed.version === manifest.version) {
+    emitProgress(onProgress, {
+      phase: "ready",
+      progress: 100,
+      version: installed.version,
+      latestVersion: manifest.version,
+      message: `OpenClaw v${installed.version} 已是最新版本。`,
+      detail: installed.runtimeRoot,
+    });
+    return { ...installed, baseDir: runtimeBaseDir, latestVersion: manifest.version };
   }
+
+  const tarballPath = await downloadTarball({ userDataDir, manifest, onProgress });
+  const stagingRoot = await extractTarball({ userDataDir, manifest, tarballPath, onProgress });
+  const resolved = await activateStagedRuntime({ userDataDir, manifest, stagingRoot, onProgress });
 
   emitProgress(onProgress, {
     phase: "ready",
     progress: 100,
     version: resolved.version,
-    message: `已安装 OpenClaw v${resolved.version}。`,
+    latestVersion: manifest.version,
+    message: `已准备 OpenClaw v${resolved.version}。`,
     detail: resolved.runtimeRoot,
   });
-  return { ...resolved, baseDir: userDataDir, latestVersion: null };
+
+  return { ...resolved, baseDir: runtimeBaseDir, latestVersion: manifest.version };
 }

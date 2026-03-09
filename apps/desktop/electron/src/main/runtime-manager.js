@@ -341,7 +341,7 @@ class RuntimeManager extends EventEmitter {
 
     return (
       `OpenClaw runtime not ready: ${buildProblems.join("; ")}. ` +
-      "Please ensure the current user can run `openclaw`, or let the app install it into the user HOME directory via `npm install openclaw`."
+      "Please keep the network available and let the desktop app download the managed OpenClaw runtime into its private data directory."
     );
   }
 
@@ -716,94 +716,35 @@ class RuntimeManager extends EventEmitter {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
 
+      const wasRunning = this.state === "running";
       const nodeExecPath = resolveElectronNodeExecPath({ app: this.app });
 
-      try {
-        await this.resolveRuntimeRoot(nodeExecPath);
-      } catch (error) {
-        this.setState("crashed", {
-          lastError: `Failed to prepare OpenClaw runtime update: ${error.message}`,
-        });
-        return this.getState();
-      }
-
       await this.stop();
-
-      const runtimeEntry = resolveRuntimeEntry(this.runtimeRoot);
-      const gatewayAuth = this.resolveGatewayAuth();
-      const env = {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1",
-        OPENCLAW_STATE_DIR: this.stateDir,
-        OPENCLAW_CONFIG_PATH: this.getConfigPath(),
-        OPENCLAW_DESKTOP_NODE_EXEC: nodeExecPath,
-        FORCE_COLOR: "0",
-      };
-      if (gatewayAuth.token) {
-        env.OPENCLAW_GATEWAY_TOKEN = gatewayAuth.token;
-      }
 
       this.setRuntimeTask({
         phase: "updating-runtime",
         progress: 12,
         version: this.health.version,
         latestVersion: this.runtimeLatestVersion,
-        message: "正在在线更新 OpenClaw runtime…",
+        message: "正在下载并更新 OpenClaw runtime…",
       });
 
-      const updateInvocation = await this.buildRuntimeCommandInvocation(["update", "--yes", "--no-restart", "--json"]);
-      const updateCommand = updateInvocation.command;
-      const updateArgs = updateInvocation.args;
-      const result = await new Promise((resolve, reject) => {
-        const child = spawn(updateCommand, updateArgs, {
-          cwd: this.runtimeRoot,
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        let progress = 16;
-        const recentLines = [];
-        const pushLine = (chunk) => {
-          const text = String(chunk || "").trim();
-          if (!text) {
-            return;
+      try {
+        await this.resolveRuntimeRoot(nodeExecPath, { forceLatest: true });
+      } catch (error) {
+        if (wasRunning && this.runtimeRoot) {
+          try {
+            await this.start({ reason: "update-failed-restore", skipRuntimeResolve: true });
+            return this.getState();
+          } catch {
+            // ignore restart failure and surface original update error below
           }
-          recentLines.push(text);
-          while (recentLines.length > 20) recentLines.shift();
-          this.setRuntimeTask({
-            phase: "updating-runtime",
-            progress,
-            version: this.health.version,
-            latestVersion: this.runtimeLatestVersion,
-            message: "正在在线更新 OpenClaw runtime…",
-            detail: text,
-          });
-        };
-        const tick = setInterval(() => {
-          progress = Math.min(progress + 2, 92);
-          this.setRuntimeTask({
-            phase: "updating-runtime",
-            progress,
-            version: this.health.version,
-            latestVersion: this.runtimeLatestVersion,
-            message: "正在在线更新 OpenClaw runtime…",
-          });
-        }, 1000);
-        child.stdout.on("data", pushLine);
-        child.stderr.on("data", pushLine);
-        child.once("error", (error) => {
-          clearInterval(tick);
-          reject(error);
+        }
+        this.setState("crashed", {
+          lastError: `Failed to update OpenClaw runtime: ${error.message}`,
         });
-        child.once("exit", (code) => {
-          clearInterval(tick);
-          if (code === 0) {
-            resolve({ recentLines });
-            return;
-          }
-          const extra = recentLines.length ? `\n${recentLines.join("\n")}` : "";
-          reject(new Error(`openclaw update failed with code ${code}${extra}`));
-        });
-      });
+        return this.getState();
+      }
 
       this.health.version = resolveRuntimeVersion(this.runtimeRoot) || this.health.version;
       this.setRuntimeTask({
@@ -812,7 +753,7 @@ class RuntimeManager extends EventEmitter {
         version: this.health.version,
         latestVersion: this.runtimeLatestVersion,
         message: `OpenClaw runtime 已更新到 v${this.health.version}，正在重启…`,
-        detail: result.recentLines?.slice(-5).join("\n") || null,
+        detail: this.runtimeRoot,
       });
 
       return this.start({ reason: "manual-update", skipRuntimeResolve: true });

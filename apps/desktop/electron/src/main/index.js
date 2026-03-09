@@ -41,7 +41,9 @@ const BACKUP_LABELS = {
 const RUNTIME_UPDATE_BUSY_PHASES = new Set([
   'checking-local',
   'checking-latest',
-  'installing',
+  'downloading-runtime',
+  'extracting-runtime',
+  'using-cached',
   'finalizing',
   'starting-runtime',
   'stopping-runtime',
