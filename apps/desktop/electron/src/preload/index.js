@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { clipboard, contextBridge, ipcRenderer } = require("electron");
 
 const CHANNEL = "desktop-runtime:state-changed";
 const OPEN_SETUP_CHANNEL = "desktop-setup:open";
@@ -373,6 +373,60 @@ function ensureSetupWizard(api) {
       wizardState.loading = false;
       render();
     }
+  }
+
+  function isEditableWizardTarget(target) {
+    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+  }
+
+  function pasteTextIntoTarget(target, text) {
+    if (!isEditableWizardTarget(target) || typeof text !== 'string' || text.length === 0) {
+      return false;
+    }
+
+    const start = typeof target.selectionStart === 'number' ? target.selectionStart : target.value.length;
+    const end = typeof target.selectionEnd === 'number' ? target.selectionEnd : target.value.length;
+    const nextValue = `${target.value.slice(0, start)}${text}${target.value.slice(end)}`;
+    target.focus();
+    target.value = nextValue;
+    const caret = start + text.length;
+    if (typeof target.setSelectionRange === 'function') {
+      target.setSelectionRange(caret, caret);
+    }
+    target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    return true;
+  }
+
+  function bindWizardPasteShortcuts() {
+    if (shadow.__openclawPasteBound) {
+      return;
+    }
+    shadow.__openclawPasteBound = true;
+
+    shadow.addEventListener('keydown', (event) => {
+      const target = event.composedPath?.()[0] || event.target;
+      if (!isEditableWizardTarget(target)) {
+        return;
+      }
+
+      const wantsPaste = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && String(event.key).toLowerCase() === 'v';
+      if (!wantsPaste) {
+        return;
+      }
+
+      if (event.metaKey) {
+        return;
+      }
+
+      const text = clipboard.readText();
+      if (!text) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      pasteTextIntoTarget(target, text);
+    });
   }
 
   function bindInputValue(id, applyValue) {
@@ -769,6 +823,7 @@ function ensureSetupWizard(api) {
     "DOMContentLoaded",
     () => {
       document.body.append(root);
+      bindWizardPasteShortcuts();
       queuePrefillTestMessage();
       void refreshStatus();
       api.subscribe((state) => {

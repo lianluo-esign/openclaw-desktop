@@ -272,6 +272,21 @@ function buildMenu() {
         ]
       : []),
     {
+      label: '编辑',
+      submenu: [
+        { role: 'undo', label: '撤销' },
+        { role: 'redo', label: '重做' },
+        { type: 'separator' },
+        { role: 'cut', label: '剪切' },
+        { role: 'copy', label: '复制' },
+        { role: 'paste', label: '粘贴' },
+        { role: 'pasteAndMatchStyle', label: '粘贴并匹配样式' },
+        { role: 'delete', label: '删除' },
+        { type: 'separator' },
+        { role: 'selectAll', label: '全选' },
+      ],
+    },
+    {
       label: '配置',
       submenu: [
         { label: '打开配置向导', click: () => requestOpenSetupWizard() },
@@ -448,6 +463,29 @@ async function restoreBackupVersion(objectName) {
   return restorePromise;
 }
 
+function attachEditableContextMenu() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable) {
+      return;
+    }
+
+    const menu = Menu.buildFromTemplate([
+      { role: 'undo', label: '撤销', enabled: params.editFlags.canUndo },
+      { role: 'redo', label: '重做', enabled: params.editFlags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', label: '剪切', enabled: params.editFlags.canCut },
+      { role: 'copy', label: '复制', enabled: params.editFlags.canCopy },
+      { role: 'paste', label: '粘贴', enabled: params.editFlags.canPaste },
+      { role: 'selectAll', label: '全选' },
+    ]);
+    menu.popup({ window: mainWindow });
+  });
+}
+
 function broadcastState() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -596,6 +634,7 @@ if (!app.requestSingleInstanceLock()) {
     buildMenu();
     createTray();
     createWindow();
+    attachEditableContextMenu();
     registerIpc();
     attachRuntimeEvents();
     attachBackupEvents();
