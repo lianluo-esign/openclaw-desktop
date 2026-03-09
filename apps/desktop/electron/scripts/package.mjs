@@ -106,6 +106,21 @@ function patchElectronBuilderForUnixNode25() {
   ]]);
 }
 
+function patchOsxSignBinaryDetection() {
+  const isBinaryFilePath = require.resolve('@electron/osx-sign/node_modules/isbinaryfile/lib/index.js');
+  patchFile(isBinaryFilePath, [[
+    '            const len = readProtoVarInt(reader);\n            reader.next(len);\n            return true;',
+    '            const len = readProtoVarInt(reader);\n            if (!Number.isFinite(len) || len < 0 || len > MAX_BYTES) {\n                return false;\n            }\n            reader.next(len);\n            return true;',
+  ]]);
+}
+
+function applyPackagingPatches(targetPlatform) {
+  patchElectronBuilderForUnixNode25();
+  if (targetPlatform === 'darwin') {
+    patchOsxSignBinaryDetection();
+  }
+}
+
 function main() {
   const explicitTargetArgs = process.argv.slice(2);
   const platformArgs = explicitTargetArgs.length > 0 ? explicitTargetArgs : resolvePlatformArgs(process.platform);
@@ -115,10 +130,9 @@ function main() {
   const vendorSourceRoot = process.env.OPENCLAW_VENDOR_DIR ? path.resolve(process.env.OPENCLAW_VENDOR_DIR) : vendorDefaultRoot;
 
   run(process.execPath, ['scripts/build-runtime-bundle.mjs', `--platform=${targetPlatform}`, `--arch=${targetArch}`, `--source=${vendorSourceRoot}`], baseEnv);
-
   run(process.execPath, ['scripts/prepare-runtime.mjs', `--platform=${targetPlatform}`, `--arch=${targetArch}`], baseEnv);
   run(process.execPath, ['scripts/build-ts.mjs'], baseEnv);
-  patchElectronBuilderForUnixNode25();
+  applyPackagingPatches(targetPlatform);
   run(process.execPath, [resolveElectronBuilderCli(), ...platformArgs, '--publish', 'never'], baseEnv);
 }
 
