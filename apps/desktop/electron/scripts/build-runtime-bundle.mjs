@@ -116,10 +116,48 @@ function getRequiredRuntimePaths() {
   ];
 }
 
-function assertRuntimeShape(runtimeRoot, label) {
+function isPathInsideRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function collectBrokenSymlinks(root) {
+  const broken = [];
+
+  async function visit(current) {
+    const entries = await fsp.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const currentPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await fsp.readlink(currentPath);
+        const resolvedTarget = path.resolve(path.dirname(currentPath), linkTarget);
+        if (!exists(resolvedTarget)) {
+          broken.push(currentPath);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await visit(currentPath);
+      }
+    }
+  }
+
+  if (exists(root)) {
+    await visit(root);
+  }
+
+  return broken;
+}
+
+async function assertRuntimeShape(runtimeRoot, label) {
   const missing = getRequiredRuntimePaths().filter((relativePath) => !exists(path.join(runtimeRoot, relativePath)));
   if (missing.length > 0) {
     throw new Error(`${label} is incomplete; missing: ${missing.join(', ')}`);
+  }
+
+  const brokenSymlinks = await collectBrokenSymlinks(runtimeRoot);
+  if (brokenSymlinks.length > 0) {
+    throw new Error(`${label} contains broken symlinks: ${brokenSymlinks.slice(0, 8).join(', ')}`);
   }
 }
 
@@ -148,6 +186,23 @@ async function copyDir(source, target) {
   }
 }
 
+async function copyPath(sourcePath, targetPath) {
+  const stat = await fsp.lstat(sourcePath);
+  if (stat.isDirectory()) {
+    await copyDir(sourcePath, targetPath);
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    const linkTarget = await fsp.readlink(sourcePath);
+    await rmrf(targetPath);
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+    await fsp.symlink(linkTarget, targetPath);
+    return;
+  }
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  await fsp.copyFile(sourcePath, targetPath);
+}
+
 async function copySelectedEntries(sourceRoot, targetRoot) {
   const includeEntries = [
     'openclaw.mjs',
@@ -170,13 +225,55 @@ async function copySelectedEntries(sourceRoot, targetRoot) {
       continue;
     }
     const targetPath = path.join(targetRoot, entry);
-    const stat = await fsp.lstat(sourcePath);
-    if (stat.isDirectory()) {
-      await copyDir(sourcePath, targetPath);
-      continue;
+    await copyPath(sourcePath, targetPath);
+  }
+}
+
+async function materializeInternalSymlinkTargets(sourceRoot, targetRoot) {
+  for (let pass = 0; pass < 8; pass += 1) {
+    const brokenSymlinks = await collectBrokenSymlinks(targetRoot);
+    if (brokenSymlinks.length === 0) {
+      return;
     }
-    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-    await fsp.copyFile(sourcePath, targetPath);
+
+    let repaired = 0;
+    for (const brokenPath of brokenSymlinks) {
+      const relativeBrokenPath = path.relative(targetRoot, brokenPath);
+      const sourceLinkPath = path.join(sourceRoot, relativeBrokenPath);
+      let sourceStat;
+      try {
+        sourceStat = await fsp.lstat(sourceLinkPath);
+      } catch {
+        continue;
+      }
+      if (!sourceStat.isSymbolicLink()) {
+        continue;
+      }
+
+      const linkTarget = await fsp.readlink(sourceLinkPath);
+      const resolvedSourceTarget = path.resolve(path.dirname(sourceLinkPath), linkTarget);
+      if (!exists(resolvedSourceTarget) || !isPathInsideRoot(sourceRoot, resolvedSourceTarget)) {
+        continue;
+      }
+
+      const relativeResolvedTarget = path.relative(sourceRoot, resolvedSourceTarget);
+      const targetResolvedPath = path.join(targetRoot, relativeResolvedTarget);
+      if (exists(targetResolvedPath)) {
+        continue;
+      }
+
+      await copyPath(resolvedSourceTarget, targetResolvedPath);
+      repaired += 1;
+    }
+
+    if (repaired === 0) {
+      break;
+    }
+  }
+
+  const remainingBroken = await collectBrokenSymlinks(targetRoot);
+  if (remainingBroken.length > 0) {
+    throw new Error(`runtime bundle still contains broken symlinks after repair: ${remainingBroken.slice(0, 8).join(', ')}`);
   }
 }
 
@@ -301,7 +398,7 @@ async function main() {
     buildSource({ manager, sourceRoot, scripts: refreshedSourceState.scripts, env });
   }
 
-  assertRuntimeShape(sourceRoot, 'vendored OpenClaw source build output');
+  await assertRuntimeShape(sourceRoot, 'vendored OpenClaw source build output');
 
   const existingMeta = await readBundleMeta(bundleRoot);
   if (
@@ -310,7 +407,7 @@ async function main() {
     && existingMeta?.bundleId === bundleId
   ) {
     try {
-      assertRuntimeShape(bundleRoot, `runtime bundle ${bundleId}`);
+      await assertRuntimeShape(bundleRoot, `runtime bundle ${bundleId}`);
       process.stdout.write(`Runtime bundle ${bundleId} v${sourcePkg.version} already matches vendored source; skipping rebuild.\n`);
       return;
     } catch {
@@ -320,7 +417,8 @@ async function main() {
 
   await rmrf(bundleRoot);
   await copySelectedEntries(sourceRoot, bundleRoot);
-  assertRuntimeShape(bundleRoot, `runtime bundle ${bundleId}`);
+  await materializeInternalSymlinkTargets(sourceRoot, bundleRoot);
+  await assertRuntimeShape(bundleRoot, `runtime bundle ${bundleId}`);
   await writeBundleMeta(bundleRoot, {
     bundleId,
     platform,

@@ -81,10 +81,43 @@ function getRequiredRuntimePaths() {
   ];
 }
 
+async function collectBrokenSymlinks(root) {
+  const broken = [];
+
+  async function visit(current) {
+    const entries = await fsp.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const currentPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await fsp.readlink(currentPath);
+        const resolvedTarget = path.resolve(path.dirname(currentPath), linkTarget);
+        if (!fs.existsSync(resolvedTarget)) {
+          broken.push(currentPath);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await visit(currentPath);
+      }
+    }
+  }
+
+  if (fs.existsSync(root)) {
+    await visit(root);
+  }
+
+  return broken;
+}
+
 async function assertRuntimeShape(bundleRoot, bundleId) {
   const missing = getRequiredRuntimePaths().filter((relativePath) => !fs.existsSync(path.join(bundleRoot, relativePath)));
   if (missing.length > 0) {
     throw new Error(`runtime bundle ${bundleId} is incomplete; missing: ${missing.join(', ')}`);
+  }
+
+  const brokenSymlinks = await collectBrokenSymlinks(bundleRoot);
+  if (brokenSymlinks.length > 0) {
+    throw new Error(`runtime bundle ${bundleId} contains broken symlinks: ${brokenSymlinks.slice(0, 8).join(', ')}`);
   }
 }
 
@@ -155,6 +188,7 @@ async function main() {
 
   await fsp.rm(runtimeOpenClawRoot, { recursive: true, force: true });
   await copyDir(sourceRoot, runtimeOpenClawRoot);
+  await assertRuntimeShape(runtimeOpenClawRoot, bundleId);
   await writeManifest({ bundleId, platform, arch, version });
 
   process.stdout.write(`Prepared runtime bundle ${bundleId} v${version} -> ${runtimeOpenClawRoot}\n`);
